@@ -1,0 +1,41 @@
+name: bsky
+channels:
+  - defaults
+dependencies:
+  - bzip2=1.0.8
+  - ca-certificates=2024.7.2
+  - expat=2.6.2
+  - libcxx=14.0.6
+  - libffi=3.4.4
+  - ncurses=6.4
+  - openssl=3.0.14
+  - pip=24.0
+  - python=3.12.4
+  - readline=8.2
+  - setuptools=69.5.1
+  - sqlite=3.45.3
+  - tk=8.6.14
+  - tzdata=2024a
+  - wheel=0.43.0
+  - xz=5.4.6
+  - zlib=1.2.13
+  - pip:
+      - annotated-types==0.7.0
+      - anyio==4.4.0
+      - atproto==0.0.49
+      - certifi==2024.7.4
+      - cffi==1.16.0
+      - click==8.1.7
+      - cryptography==42.0.8
+      - dnspython==2.6.1
+      - h11==0.14.0
+      - httpcore==1.0.5
+      - httpx==0.26.0
+      - idna==3.7
+      - libipld==1.2.3
+      - pycparser==2.22
+      - pydantic==2.8.2
+      - pydantic-core==2.20.1
+      - sniffio==1.3.1
+      - typing-extensions==4.12.2
+      - websockets==12.0
