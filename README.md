@@ -1,15 +1,11 @@
 # osome-bluesky-streamer
 
-## Quick start
+## What's inside?
+
+- `firehose/` : main firehose stream
+- `backfill/` : collect data of the entire Bluesky
 
 ```
 conda env create -f environment.yml
 conda activate bsky
-python firehose_streamer.py
 ```
-
-It will keep running indefinitely.
-
-## Documentation
-
-This firehose streamer is built using the [AT Protocol SDK](https://atproto.blue/en/latest/index.html). 

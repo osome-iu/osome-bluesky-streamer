@@ -97,16 +97,21 @@ def _get_ops_by_type(commit: models.ComAtprotoSyncSubscribeRepos.Commit) -> dict
 
 if __name__ == '__main__':
     # Configure the logger
+    log_folder = "log"
+    # Ensure log folder exists
+    if not os.path.exists(log_folder):
+        os.makedirs(log_folder)
+
     logging.basicConfig(
         level=logging.INFO,
         format='%(asctime)s [%(levelname)s]: %(message)s',
         datefmt='%Y-%m-%d %H:%M:%S',
         handlers=[
-            logging.FileHandler('streamer_stdout.log'),
+            logging.FileHandler(os.path.join(log_folder, 'streamer_stdout.log')),
         ]
     )
-    logger = logging.getLogger('firehose_stream_logger')
-    sys.stderr = open('streamer_stderr.log', 'a')
+    logger = logging.getLogger(os.path.join(log_folder, 'firehose_stream_logger'))
+    sys.stderr = open(os.path.join(log_folder, 'streamer_stderr.log'), 'a')
 
     def on_message_handler(message: firehose_models.MessageFrame) -> None:
         """
