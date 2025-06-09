@@ -30,13 +30,20 @@ from datetime import datetime, timezone
 import os
 import sys
 import logging
+import base64
 
 
 def convert_to_json_serializable(obj):
     """Convert model objects to JSON serializable format."""
     if isinstance(obj, list):
         return [convert_to_json_serializable(item) for item in obj]
-    return get_model_as_json(obj)
+    if isinstance(obj, dict):
+        return {k: convert_to_json_serializable(v) for k, v in obj.items()}
+    if isinstance(obj, bytes):
+        return base64.b64encode(obj).decode('ascii')  # or .hex()
+    if hasattr(obj, '__dict__'):
+        return convert_to_json_serializable(obj.__dict__)
+    return obj
 
 
 def _get_ops_by_type(commit: models.ComAtprotoSyncSubscribeRepos.Commit) -> dict:
@@ -81,13 +88,13 @@ def _get_ops_by_type(commit: models.ComAtprotoSyncSubscribeRepos.Commit) -> dict
                 record = get_or_create(record_raw_data, strict=False)
                 if record:
                     record_json = convert_to_json_serializable(record)
-                    commit_info.update(json.loads(record_json))
+                    commit_info.update(record_json)
             except Exception as e:
                 logger.error(f"Failed to update with info from blocks\nError: {e}\nRecord content not parsed: {record}\nCommit Info: {commit_info}")
             finally:
                 try:
                     with open(output_filename, "at+", encoding='utf-8') as json_file:
-                        json_file.write(f'{json.dumps(commit_info)}\n')
+                        json_file.write(f'{json.dumps(commit_info, ensure_ascii=False)}\n')
                 except Exception as e:
                     logger.critical(f"Failed to write to file: {output_filename} because of exception {e}")
                     sys.exit(1)
