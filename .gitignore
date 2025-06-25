@@ -4,3 +4,5 @@ last_seq
 *.json
 *.txt
 *.log
+/moderation
+/venv

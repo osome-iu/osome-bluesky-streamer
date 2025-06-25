@@ -8,7 +8,7 @@ import requests
 import json
 import logging
 import os
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 import time
 
 # Setup logging
@@ -71,8 +71,9 @@ while True:
             last_timestamp = json.loads(data[-1])["createdAt"]
             save_last_timestamp(last_timestamp)
             
-            last_timestamp_dt = datetime.strptime(last_timestamp, "%Y-%m-%dT%H:%M:%S.%fZ")
-            current_time = datetime.utcnow()
+            # assuming all timestamps in UTC
+            last_timestamp_dt = datetime.strptime(last_timestamp, "%Y-%m-%dT%H:%M:%S.%fZ").replace(tzinfo=timezone.utc)
+            current_time = datetime.now(timezone.utc)
             if current_time - last_timestamp_dt <= timedelta(minutes=1):
                 logging.info("Last timestamp is within 1 minute of current time. Exiting loop.")
                 break
