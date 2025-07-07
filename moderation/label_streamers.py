@@ -86,7 +86,7 @@ def load_endpoints_from_csv(csv_file):
     with open(csv_file, "r", encoding="utf-8") as f:
         reader = csv.DictReader(f)
         for row in reader:
-            service_endpoint = row.get("service_endpoint", "").strip()
+            service_endpoint = row.get("service_endpoint", "").strip().rstrip("/")
             if service_endpoint:
                 if "://" not in service_endpoint:
                     service_endpoint = "https://" + service_endpoint
@@ -100,7 +100,7 @@ def load_endpoints_from_csv(csv_file):
                     continue
                 endpoints.add(endpoint_without_protocol)
     logger.info(f"Total # of endpoints: {len(endpoints)}")
-    return list(endpoints)  # Ensure it's a list for batch processing
+    return sorted(list(endpoints))  # sorted list for batch processing
 
 def convert_to_json_serializable(obj):
     """Convert objects to JSON serializable format."""
