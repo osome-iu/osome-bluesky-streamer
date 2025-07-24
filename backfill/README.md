@@ -6,7 +6,7 @@ The main idea is to first discover all PDSs by examing the [PLC](https://web.plc
 
 **Steps:**
 
-1. `get_plc_history.py`    : crawl all plc operations to file `plc_data.json`
+1. `get_plc_history.py`    : crawl all plc operations to file `plc_data.jsonl`
 2. Collect user data:
     - Create a [bsky.app](https://bsky.app/) account and fill in your login credentials to `bsky_login_info.json`
     - `get_user_records.py`                   : retrieve and decode user Repo CAR files
