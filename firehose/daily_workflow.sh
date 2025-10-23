@@ -2,8 +2,8 @@
 
 # This is for daily archiving bsky firehose data
 # set the python path here
-python="/Users/nick/Desktop/iuni_stuff/osome-bluesky-streamer/venv/bin/python"
-backup_root_folder=""
+python="/path/to/osome-bluesky-streamer/venv/bin/python"
+backup_root_folders=("/path/to/backup/folder", "/another/backup/folder")
 
 # Ensure python is set and valid
 if [[ -z "$python" ]]; then
@@ -26,13 +26,25 @@ if [[ ! -d "$backup_root_folder" ]]; then
 fi
 echo "Backup root folder: $backup_root_folder"
 
-current_date=$(date +"%Y-%m-%d")
-current_yyyy_mm=$(date +"%Y-%m")
-filename="$current_date".json
+# Check if inside a git repository
+if ! git rev-parse --is-inside-work-tree &> /dev/null; then
+    echo "Error: Not inside a git repository."
+    exit 1
+fi
+
+# Check if running inside the firehose directory
+if [[ "$(basename "$(pwd)")" != "firehose" ]]; then
+    echo "Error: Script must be run from the firehose/ directory."
+    exit 1
+fi
+
+# set date variables
+yesterday=$(date -u -d "yesterday" +"%Y-%m-%d")
+yesterdays_yyyy_mm=$(date -u -d "yesterday" +"%Y-%m")
+filename="$yesterday.json"
 
 local_file="$filename"
-target_backup_folder="$backup_root_folder/$current_yyyy_mm"
-target_backup_file="$backup_root_folder/$current_yyyy_mm/$filename"
+counts_file="${yesterday}_counts.csv"
 
 # Check if local file exists
 if [ ! -f "$local_file" ]; then
@@ -40,23 +52,53 @@ if [ ! -f "$local_file" ]; then
   exit 1
 fi
 
-echo "$(date "+%Y-%m-%d %r") Starting the workflow for $current_date..."
+echo "$(date "+%Y-%m-%d %r") Starting the workflow for $yesterday..."
 # get counts
 $python count_types.py $local_file
+
 echo "$(date "+%Y-%m-%d %r") Generated count file"
-# Ensure the target backup folder exists
-if [[ ! -d "$target_backup_folder" ]]; then
-    echo "Creating target backup folder: $target_backup_folder"
-    mkdir -p "$target_backup_folder"
+
+# Compress the JSON file if not already compressed
+if [ ! -f "$local_file.gz" ]; then
+    echo "Compressing $local_file..."
+    gzip -c "$local_file" > "$local_file.gz" && touch gzip_status_success.txt
+    if [ -f gzip_status_success.txt ]; then
+        rm "$local_file"
+        rm gzip_status_success.txt
+        echo "Compression successful, original $local_file removed."
+    else
+        echo "Compression failed, original $local_file kept."
+        exit 1
+    fi
 fi
-cp "${current_date}_counts.csv" "$target_backup_folder/" && rm "${current_date}_counts.csv"
-# Check if the remote file exists and backup as needed
-if "[ -e '$target_backup_file.gz' ]"; then
-    echo "$(date "+%Y-%m-%d %r") $target_backup_file already exists."
-else
-    echo "$(date "+%Y-%m-%d %r") Compressing, archiving, and removing $local_file..."
-    command="gzip "$local_file" && cp $local_file.gz $target_backup_file.gz && rm $local_file.gz"
-    echo $command
-    eval $command
-    echo "$(date "+%Y-%m-%d %r") Done compressing, archiving, and removing the local file"
-fi
+
+# Loop through all backup folders and copy files
+for backup_root_folder in "${backup_root_folders[@]}"; do
+    target_backup_folder="$backup_root_folder/$yesterdays_yyyy_mm"
+    target_backup_file="$target_backup_folder/$filename.gz"
+    target_counts_file="$target_backup_folder/${yesterday}_counts.csv"
+
+    # Skip if the backup root folder does not exist
+    if [[ ! -d "$backup_root_folder" ]]; then
+        echo "Skipping $backup_root_folder (does not exist)"
+        continue
+    fi
+
+    # Ensure the target backup folder exists
+    if [[ ! -d "$target_backup_folder" ]]; then
+        echo "Creating target backup folder: $target_backup_folder"
+        mkdir -p "$target_backup_folder"
+    fi
+
+    # Copy the counts CSV
+    cp "$counts_file" "$target_counts_file"
+    echo "Copied $counts_file to $target_counts_file"
+
+    # Copy the compressed JSON file
+    cp "$local_file.gz" "$target_backup_file"
+    echo "Copied $local_file.gz to $target_backup_file"
+
+done
+
+# remove the local compressed file and counts file
+rm "$local_file.gz" "$counts_file"
