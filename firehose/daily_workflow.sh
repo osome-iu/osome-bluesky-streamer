@@ -38,9 +38,38 @@ if [[ "$(basename "$(pwd)")" != "firehose" ]]; then
     exit 1
 fi
 
-# set date variables
-yesterday=$(date -u -d "yesterday" +"%Y-%m-%d")
-yesterdays_yyyy_mm=$(date -u -d "yesterday" +"%Y-%m")
+# Parse arguments
+DRY_RUN=0
+input_date=""
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        --dry|--dry-run)
+            DRY_RUN=1
+            shift
+            ;;
+        --date)
+            input_date="$2"
+            shift 2
+            ;;
+        *)
+            echo "Unknown argument: $1"
+            exit 1
+            ;;
+    esac
+done
+
+if [ -z "$input_date" ]; then
+    # Portable yesterday calculation
+    if date -u -d yesterday +"%Y-%m-%d" &>/dev/null; then
+        input_date=$(date -u -d "yesterday" +"%Y-%m-%d")
+    else
+        input_date=$(date -u -v -1d +"%Y-%m-%d")
+    fi
+fi
+
+yesterday="$input_date"
+# Extract YYYY-MM from YYYY-MM-DD
+yesterdays_yyyy_mm="${yesterday:0:7}"
 filename="$yesterday.json"
 
 local_file="$filename"
@@ -54,21 +83,29 @@ fi
 
 echo "$(date "+%Y-%m-%d %r") Starting the workflow for $yesterday..."
 # get counts
-$python count_types.py $local_file
+if [[ $DRY_RUN -eq 1 ]]; then
+    echo "[DRY RUN] Would run: $python count_types.py $local_file"
+else
+    $python count_types.py $local_file
+fi
 
 echo "$(date "+%Y-%m-%d %r") Generated count file"
 
 # Compress the JSON file if not already compressed
 if [ ! -f "$local_file.gz" ]; then
     echo "Compressing $local_file..."
-    gzip -c "$local_file" > "$local_file.gz" && touch gzip_status_success.txt
-    if [ -f gzip_status_success.txt ]; then
-        rm "$local_file"
-        rm gzip_status_success.txt
-        echo "Compression successful, original $local_file removed."
+    if [[ $DRY_RUN -eq 1 ]]; then
+        echo "[DRY RUN] Would run: gzip -c $local_file > $local_file.gz && touch gzip_status_success.txt"
     else
-        echo "Compression failed, original $local_file kept."
-        exit 1
+        gzip -c "$local_file" > "$local_file.gz" && touch gzip_status_success.txt
+        if [ -f gzip_status_success.txt ]; then
+            rm "$local_file"
+            rm gzip_status_success.txt
+            echo "Compression successful, original $local_file removed."
+        else
+            echo "Compression failed, original $local_file kept."
+            exit 1
+        fi
     fi
 fi
 
@@ -86,19 +123,35 @@ for backup_root_folder in "${backup_root_folders[@]}"; do
 
     # Ensure the target backup folder exists
     if [[ ! -d "$target_backup_folder" ]]; then
-        echo "Creating target backup folder: $target_backup_folder"
-        mkdir -p "$target_backup_folder"
+        if [[ $DRY_RUN -eq 1 ]]; then
+            echo "[DRY RUN] Would run: mkdir -p $target_backup_folder"
+        else
+            echo "Creating target backup folder: $target_backup_folder"
+            mkdir -p "$target_backup_folder"
+        fi
     fi
 
     # Copy the counts CSV
-    cp "$counts_file" "$target_counts_file"
-    echo "Copied $counts_file to $target_counts_file"
+    if [[ $DRY_RUN -eq 1 ]]; then
+        echo "[DRY RUN] Would run: cp $counts_file $target_counts_file"
+    else
+        cp "$counts_file" "$target_counts_file"
+        echo "Copied $counts_file to $target_counts_file"
+    fi
 
     # Copy the compressed JSON file
-    cp "$local_file.gz" "$target_backup_file"
-    echo "Copied $local_file.gz to $target_backup_file"
+    if [[ $DRY_RUN -eq 1 ]]; then
+        echo "[DRY RUN] Would run: cp $local_file.gz $target_backup_file"
+    else
+        cp "$local_file.gz" "$target_backup_file"
+        echo "Copied $local_file.gz to $target_backup_file"
+    fi
 
 done
 
 # remove the local compressed file and counts file
-rm "$local_file.gz" "$counts_file"
+if [[ $DRY_RUN -eq 1 ]]; then
+    echo "[DRY RUN] Would run: rm $local_file.gz $counts_file"
+else
+    rm "$local_file.gz" "$counts_file"
+fi
