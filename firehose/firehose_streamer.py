@@ -183,7 +183,7 @@ if __name__ == '__main__':
         Args:
             error (BaseException): The error encountered.
         """
-        logger.error('Got error!', error)
+        logger.error(f'Got error! {error}')
 
     client = FirehoseSubscribeReposClient(base_uri='wss://bsky.network/xrpc')
     last_seq_file = "last_seq"
