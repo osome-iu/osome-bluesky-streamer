@@ -126,12 +126,6 @@ for backup_root_folder in "${backup_root_folders[@]}"; do
         continue
     fi
 
-    # Skip if backup folder is the same as the current working directory
-    if [[ "$backup_root_folder" == "$(pwd)" ]]; then
-        echo "Skipping $backup_root_folder (same as original file folder)"
-        continue
-    fi
-
     # Ensure the target backup folder exists
     if [[ ! -d "$target_backup_folder" ]]; then
         if [[ $DRY_RUN -eq 1 ]]; then
