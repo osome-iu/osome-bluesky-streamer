@@ -1,9 +1,14 @@
 #!/bin/bash
 
+# Example usages:
+# ./daily_workflow.sh -> processes yesterday's data
+# ./daily_workflow.sh --date 2025-10-22 -> processes a specific date
+# ./daily_workflow.sh --date 2025-10-22 --dry-run -> simulates the workflow for a specific date
+
 # This is for daily archiving bsky firehose data
 # set the python path here
 python="/path/to/osome-bluesky-streamer/venv/bin/python"
-backup_root_folders=("/path/to/backup/folder", "/another/backup/folder")
+backup_root_folders=("/path/to/backup/folder" "/another/backup/folder")
 
 # Ensure python is set and valid
 if [[ -z "$python" ]]; then
@@ -14,17 +19,6 @@ elif ! command -v "$python" &> /dev/null; then
     exit 1
 fi
 echo "Using Python at: $python"
-
-# default to running dir if not set
-if [[ -z "$backup_root_folder" ]]; then
-    backup_root_folder="$(pwd)"
-fi
-# Ensure the folder exists
-if [[ ! -d "$backup_root_folder" ]]; then
-    echo "Error: Backup root folder '$backup_root_folder' does not exist."
-    exit 1
-fi
-echo "Backup root folder: $backup_root_folder"
 
 # Check if inside a git repository
 if ! git rev-parse --is-inside-work-tree &> /dev/null; then
@@ -109,6 +103,17 @@ if [ ! -f "$local_file.gz" ]; then
     fi
 fi
 
+# Check backup_root_folders
+if [[ ${#backup_root_folders[@]} -eq 0 ]]; then
+    echo "Error: No backup root folders specified. Exiting."
+    exit 1
+else
+    echo "Backup root folders:"
+    for folder in "${backup_root_folders[@]}"; do
+        echo "  $folder"
+    done
+fi
+
 # Loop through all backup folders and copy files
 for backup_root_folder in "${backup_root_folders[@]}"; do
     target_backup_folder="$backup_root_folder/$yesterdays_yyyy_mm"
@@ -118,6 +123,12 @@ for backup_root_folder in "${backup_root_folders[@]}"; do
     # Skip if the backup root folder does not exist
     if [[ ! -d "$backup_root_folder" ]]; then
         echo "Skipping $backup_root_folder (does not exist)"
+        continue
+    fi
+
+    # Skip if backup folder is the same as the current working directory
+    if [[ "$backup_root_folder" == "$(pwd)" ]]; then
+        echo "Skipping $backup_root_folder (same as original file folder)"
         continue
     fi
 
@@ -154,4 +165,5 @@ if [[ $DRY_RUN -eq 1 ]]; then
     echo "[DRY RUN] Would run: rm $local_file.gz $counts_file"
 else
     rm "$local_file.gz" "$counts_file"
+    echo "Removed local files: $local_file.gz and $counts_file"
 fi
