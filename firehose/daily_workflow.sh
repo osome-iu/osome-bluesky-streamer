@@ -16,8 +16,8 @@ IFS=$'\n\t'
 # Default hardcoded fallback Python path
 FALLBACK_PYTHON="/path/to/osome-bluesky-streamer/venv/bin/python"
 backup_root_folders=(
-  "/path/to/backup/folder"
-  "/another/backup/folder"
+  # "/path/to/backup/folder"
+  # "/another/backup/folder"
 )
 
 # --- FUNCTIONS ---
@@ -39,6 +39,23 @@ EOF
 
 log() {
   echo "[$(date '+%Y-%m-%d %H:%M:%S')] $*"
+}
+
+get_file_size() {
+  local file="$1"
+  if [[ "$(uname)" == "Darwin" ]]; then
+    stat -f%z "$file" 2>/dev/null || echo 0
+  else
+    stat -c%s "$file" 2>/dev/null || echo 0
+  fi
+}
+
+get_yesterday() {
+  if [[ "$(uname)" == "Darwin" ]]; then
+    date -u -v -1d +"%Y-%m-%d"
+  else
+    date -u -d "yesterday" +"%Y-%m-%d"
+  fi
 }
 
 # --- ARGUMENT PARSING ---
@@ -71,13 +88,15 @@ else
 fi
 log "Using Python: $python"
 
+# --- DEFAULT BACKUP PATH FALLBACK ---
+if [[ ${#backup_root_folders[@]} -eq 0 ]]; then
+  backup_root_folders=("$PWD")
+  log "No backup folders specified; defaulting to current directory: $PWD"
+fi
+
 # --- DATE HANDLING ---
 if [[ -z "$input_date" ]]; then
-  if date -u -d yesterday +%Y-%m-%d &>/dev/null; then
-    input_date=$(date -u -d "yesterday" +"%Y-%m-%d")
-  else
-    input_date=$(date -u -v -1d +"%Y-%m-%d")
-  fi
+  input_date="$(get_yesterday)"
 fi
 
 yesterday="$input_date"
@@ -95,14 +114,16 @@ log "=== Starting daily workflow for $yesterday ==="
 
 # --- ENVIRONMENT CHECKS ---
 if ! git rev-parse --is-inside-work-tree &>/dev/null; then
-  log "Error: Not inside a git repository."; exit 1
+  log "Error: Not inside a Git repository."; exit 1
 fi
 
-if [[ "$(basename "$(pwd)")" != "firehose" ]]; then
-  log "Error: Must be run from firehose/ directory."; exit 1
+current_dir_name="$(basename "$(pwd)")"
+if [[ "$current_dir_name" != "firehose" ]]; then
+  log "Error: Must be run from the 'firehose' directory (currently in '$current_dir_name')."
+  exit 1
 fi
 
-if [ ! -f "$local_file" ]; then
+if [[ ! -f "$local_file" ]]; then
   log "Error: Local file $local_file not found."; exit 1
 fi
 
@@ -116,8 +137,8 @@ else
 fi
 log "Count file generated: $counts_file"
 
-# --- GZIP WITH SAFER TEMP FLAG ---
-if [ ! -f "$local_file.gz" ]; then
+# --- GZIP WITH SAFE TEMP FLAG ---
+if [[ ! -f "$local_file.gz" ]]; then
   log "Compressing $local_file..."
   if [[ $DRY_RUN -eq 1 ]]; then
     log "[DRY RUN] Would gzip $local_file"
@@ -163,9 +184,9 @@ for backup_root_folder in "${backup_root_folders[@]}"; do
     mkdir -p "$target_backup_folder"
     if cp "$counts_file" "$target_counts_file" && cp "$local_file.gz" "$target_backup_file"; then
       # --- INTEGRITY CHECK ---
-      src_size=$(stat -c%s "$local_file.gz")
-      dst_size=$(stat -c%s "$target_backup_file")
-      if [[ $src_size -eq $dst_size ]]; then
+      src_size=$(get_file_size "$local_file.gz")
+      dst_size=$(get_file_size "$target_backup_file")
+      if [[ "$src_size" -eq "$dst_size" && "$src_size" -gt 0 ]]; then
         log "Backup verified OK at $target_backup_folder"
       else
         log "Warning: Size mismatch at $target_backup_folder"
