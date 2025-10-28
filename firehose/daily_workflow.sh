@@ -5,6 +5,12 @@ IFS=$'\n\t'
 # =============================================================================
 #  Bluesky Firehose Daily Workflow Script
 #
+#  This script automates the daily processing, compression, and backup of bluesky firehose data files.
+#  It counts data types, compresses files safely, and backs them up to specified locations.
+#
+#  All dates and times are handled in UTC to ensure consistency.
+#  Please set cronjob to run at a time that aligns with your data availability (e.g., early morning UTC).
+#
 #  Example usages:
 #    ./daily_workflow.sh
 #    ./daily_workflow.sh --date 2025-10-22
@@ -18,7 +24,7 @@ FALLBACK_PYTHON="/path/to/osome-bluesky-streamer/venv/bin/python"
 backup_root_folders=(
   # "/path/to/backup/folder"
   # "/another/backup/folder"
-)
+) # default empty; will use "./current_directory/backup" if none specified
 
 # --- FUNCTIONS ---
 show_help() {
@@ -38,8 +44,16 @@ EOF
 }
 
 log() {
-  echo "[$(date '+%Y-%m-%d %H:%M:%S')] $*"
+  echo "[$(date -u +'%Y-%m-%d %H:%M:%S')] $*"
 }
+
+# --- LOGGING SETUP ---
+log_dir="log"
+mkdir -p "$log_dir"
+today="$(date -u +"%Y-%m-%d")"
+logfile="$log_dir/daily_workflow_${today}.log"
+exec > >(tee -a "$logfile") 2>&1
+log "======================== Starting daily workflow ========================"
 
 get_file_size() {
   local file="$1"
@@ -90,13 +104,23 @@ log "Using Python: $python"
 
 # --- DEFAULT BACKUP PATH FALLBACK ---
 if [[ ${#backup_root_folders[@]} -eq 0 ]]; then
-  backup_root_folders=("$PWD")
-  log "No backup folders specified; defaulting to current directory: $PWD"
+  backup_root_folders=("$PWD/backup")
+  log "No backup folders specified; defaulting to current directory: ${backup_root_folders[0]}"
+  if [[ $DRY_RUN -eq 1 ]]; then
+    log "[DRY RUN] Would create backup folder: ${backup_root_folders[0]}"
+  else
+    mkdir -p "${backup_root_folders[0]}"
+  fi
 fi
 
 # --- DATE HANDLING ---
 if [[ -z "$input_date" ]]; then
   input_date="$(get_yesterday)"
+else
+  if [[ ! "$input_date" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}$ ]]; then
+    log "Error: Invalid date format. Use YYYY-MM-DD. You provided: $input_date"
+    exit 1
+  fi
 fi
 
 yesterday="$input_date"
@@ -104,13 +128,6 @@ yesterdays_yyyy_mm="${yesterday:0:7}"
 filename="$yesterday.json"
 local_file="$filename"
 counts_file="${yesterday}_counts.csv"
-
-# --- LOGGING SETUP ---
-log_dir="log"
-mkdir -p "$log_dir"
-logfile="$log_dir/daily_workflow_${yesterday}.log"
-exec > >(tee -a "$logfile") 2>&1
-log "=== Starting daily workflow for $yesterday ==="
 
 # --- ENVIRONMENT CHECKS ---
 if ! git rev-parse --is-inside-work-tree &>/dev/null; then
@@ -211,4 +228,4 @@ else
   fi
 fi
 
-log "=== Workflow completed for $yesterday ==="
+log "========================    Workflow completed   ========================"
