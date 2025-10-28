@@ -225,6 +225,7 @@ else
     log "All backups succeeded. Removed local files."
   else
     log "Backup verification failed — keeping local copies."
+    exit 1
   fi
 fi
 
