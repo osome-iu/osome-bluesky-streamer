@@ -7,6 +7,6 @@
 - `moderation/` : find and collect labelers' data
 
 ```
-conda env create -f environment.yml
-conda activate bsky
+conda env create -p ./venv -f environment.yml
+conda activate ./venv/
 ```

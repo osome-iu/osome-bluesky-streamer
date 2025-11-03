@@ -31,6 +31,7 @@ import os
 import sys
 import logging
 import base64
+import signal
 
 
 def convert_to_json_serializable(obj):
@@ -93,8 +94,12 @@ def _get_ops_by_type(commit: models.ComAtprotoSyncSubscribeRepos.Commit) -> dict
                 logger.error(f"Failed to update with info from blocks\nError: {e}\nRecord content not parsed: {record}\nCommit Info: {commit_info}")
             finally:
                 try:
-                    with open(output_filename, "at+", encoding='utf-8') as json_file:
-                        json_file.write(f'{json.dumps(commit_info, ensure_ascii=False)}\n')
+                    json_data = json.dumps(commit_info, ensure_ascii=True) + '\n'
+                    
+                    with open(output_filename, "a", encoding='utf-8', errors='replace') as json_file:
+                        json_file.write(json_data)
+                        json_file.flush()
+                        os.fsync(json_file.fileno())  # Force write to disk
                 except Exception as e:
                     logger.critical(f"Failed to write to file: {output_filename} because of exception {e}")
                     sys.exit(1)
@@ -120,6 +125,29 @@ if __name__ == '__main__':
     logger = logging.getLogger(os.path.join(log_folder, 'firehose_stream_logger'))
     sys.stderr = open(os.path.join(log_folder, 'streamer_stderr.log'), 'a')
 
+    logger.info("Starting Firehose Streamer...")
+
+    n_events_per_checkpoint = 20
+    shutdown_requested = False
+    client = None  # Initialize client variable
+
+    def signal_handler(signum, frame):
+        """Handle shutdown signals gracefully."""
+        global shutdown_requested, client
+        shutdown_requested = True
+        logger.info(f"Received signal {signum}. Initiating graceful shutdown...")
+        if client is not None:
+            try:
+                client.stop()
+                logger.info("Client stopped successfully")
+            except Exception as e:
+                logger.error(f"Error stopping client: {e}")
+        sys.exit(0)
+
+    # Register signal handlers
+    signal.signal(signal.SIGINT, signal_handler)  # Ctrl+C
+    signal.signal(signal.SIGTERM, signal_handler)  # Termination signal
+
     def on_message_handler(message: firehose_models.MessageFrame) -> None:
         """
         Handle incoming messages from the firehose.
@@ -127,20 +155,23 @@ if __name__ == '__main__':
         Args:
             message (firehose_models.MessageFrame): The incoming message frame.
         """
+        if shutdown_requested:
+            return
+            
         commit = parse_subscribe_repos_message(message)
         if not isinstance(commit, models.ComAtprotoSyncSubscribeRepos.Commit):
             return
         if not commit.blocks:
             return
         # Update stored state every ~20 events
-        if commit.seq % 20 == 0:
+        if commit.seq % n_events_per_checkpoint == 0:
             client.update_params(models.ComAtprotoSyncSubscribeRepos.Params(cursor=commit.seq))
             global last_seq
             if not last_seq:
                 last_seq = commit.seq
             else:
                 last_seq = max(commit.seq, last_seq)
-                with open(last_seq_file, 'w+') as file:
+                with open(last_seq_file, 'w+', encoding='utf-8', errors='replace') as file:
                     file.write(str(last_seq))
 
         _get_ops_by_type(commit)
@@ -152,7 +183,7 @@ if __name__ == '__main__':
         Args:
             error (BaseException): The error encountered.
         """
-        logger.error('Got error!', error)
+        logger.error(f'Got error! {error}')
 
     client = FirehoseSubscribeReposClient(base_uri='wss://bsky.network/xrpc')
     last_seq_file = "last_seq"
@@ -166,21 +197,67 @@ if __name__ == '__main__':
         elif len(json_files) > 0:  # if restarting the streamer
             # Sort the files by modification time and get the most recently modified file
             latest_json_file = max(json_files, key=lambda x: os.path.getmtime(x))
-            # Get the last line of the latest modified file
-            with open(latest_json_file, 'r') as file:
-                # Seek to the end of the file
+            # Get the last valid JSON line from the last n_events_per_checkpoint*2 lines
+            last_seq = None
+            lines_to_read = n_events_per_checkpoint * 2
+            
+            with open(latest_json_file, 'r', encoding='utf-8', errors='replace') as file:
+                # Get file size
                 file.seek(0, os.SEEK_END)
-                file.seek(file.tell() - 2, os.SEEK_SET)
-                while file.read(1) != '\n':
-                    file.seek(file.tell() - 2, os.SEEK_SET)
-                last_line = file.readline()
-                last_line_json = json.loads(last_line)
-
-            last_seq = int(last_line_json['seq'])
-            client.update_params(models.ComAtprotoSyncSubscribeRepos.Params(cursor=last_seq))
-            logger.info(f"Streamer Started with existing JSON from seq: {last_seq}")
+                file_size = file.tell()
+                
+                # Read backwards to get approximately the last lines_to_read lines
+                chunk_size = 8192  # 8KB chunks
+                buffer = ''
+                position = file_size
+                lines_found = 0
+                
+                while position > 0 and lines_found < lines_to_read:
+                    # Move back by chunk size
+                    position = max(0, position - chunk_size)
+                    file.seek(position)
+                    chunk = file.read(chunk_size if position > 0 else file_size)
+                    
+                    # Prepend to buffer
+                    buffer = chunk + buffer
+                    
+                    # Count newlines to estimate lines
+                    lines_found = buffer.count('\n')
+                
+                # Split into lines and take the last lines_to_read lines
+                lines = buffer.split('\n')
+                if lines[-1] == '':  # Remove empty last line
+                    lines = lines[:-1]
+                
+                # Take only the last lines_to_read lines
+                lines_to_check = lines[-lines_to_read:] if len(lines) > lines_to_read else lines
+                
+                # Process lines from the end to find the last valid JSON line
+                for line in reversed(lines_to_check):
+                    if line.strip():  # Skip empty lines
+                        try:
+                            last_line_json = json.loads(line)
+                            last_seq = int(last_line_json['seq'])
+                            break
+                        except (json.JSONDecodeError, KeyError, ValueError) as e:
+                            logger.warning(f"Skipping corrupted JSON line: {line[:100]}... Error: {e}")
+                            continue
+            
+            if last_seq:
+                client.update_params(models.ComAtprotoSyncSubscribeRepos.Params(cursor=last_seq))
+                logger.info(f"Streamer Started with existing JSON from seq: {last_seq}")
+            else:
+                logger.warning(f"No valid JSON found in last {lines_to_read} lines of {latest_json_file}, falling back to last_seq file")
+                # Fall back to reading from last_seq_file
+                if os.path.exists(last_seq_file):
+                    with open(last_seq_file, 'r', encoding='utf-8', errors='replace') as file:
+                        last_seq = int(file.readline())
+                        client.update_params(models.ComAtprotoSyncSubscribeRepos.Params(cursor=last_seq))
+                        logger.info(f"Streamer Started with fallback file {last_seq_file} from seq: {last_seq}")
+                else:
+                    logger.info("Streamer Started fresh")
         elif os.path.exists(last_seq_file):
-            with open(last_seq_file, 'r') as file:
+            with open(last_seq_file, 'r', encoding='utf-8', errors='replace') as file:
                 last_seq = int(file.readline())
                 client.update_params(models.ComAtprotoSyncSubscribeRepos.Params(cursor=last_seq))
                 logger.info(f"Streamer Started with file {last_seq_file} from seq: {last_seq}")
