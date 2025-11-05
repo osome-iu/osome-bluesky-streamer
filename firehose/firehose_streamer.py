@@ -34,6 +34,52 @@ import base64
 import signal
 
 
+# Performance tuning 
+BATCH_SIZE = 5
+N_EVENTS_PER_CHECKPOINT = 50
+
+# Batch buffer
+event_buffer = []
+current_output_filename = None
+
+def flush_buffer():
+    """Write all buffered events to disk at once"""
+    global event_buffer, current_output_filename
+    if not event_buffer or not current_output_filename:
+        return
+        
+    try:
+        with open(current_output_filename, "a", encoding='utf-8', errors='replace') as json_file:
+            for commit_info in event_buffer:
+                json_data = json.dumps(commit_info, ensure_ascii=True) + '\n'
+                json_file.write(json_data)
+            
+            json_file.flush()
+            os.fsync(json_file.fileno())  # Force write to disk
+            
+        logger.debug(f"Flushed {len(event_buffer)} events to {current_output_filename}")
+        event_buffer.clear()
+        
+    except Exception as e:
+        logger.critical(f"Failed to write batch to file: {current_output_filename} because of exception {e}")
+        raise
+
+def add_to_buffer(commit_info, output_filename):
+    """Add event to buffer and flush if batch size reached"""
+    global event_buffer, current_output_filename
+    
+    # If filename changed, flush previous buffer
+    if current_output_filename and current_output_filename != output_filename:
+        flush_buffer()
+    
+    current_output_filename = output_filename
+    event_buffer.append(commit_info)
+    
+    # Flush if batch size reached
+    if len(event_buffer) >= BATCH_SIZE:
+        flush_buffer()
+
+
 def convert_to_json_serializable(obj):
     """Convert model objects to JSON serializable format."""
     if isinstance(obj, list):
@@ -92,17 +138,9 @@ def _get_ops_by_type(commit: models.ComAtprotoSyncSubscribeRepos.Commit) -> dict
                     commit_info.update(record_json)
             except Exception as e:
                 logger.error(f"Failed to update with info from blocks\nError: {e}\nRecord content not parsed: {record}\nCommit Info: {commit_info}")
-            finally:
-                try:
-                    json_data = json.dumps(commit_info, ensure_ascii=True) + '\n'
-                    
-                    with open(output_filename, "a", encoding='utf-8', errors='replace') as json_file:
-                        json_file.write(json_data)
-                        json_file.flush()
-                        os.fsync(json_file.fileno())  # Force write to disk
-                except Exception as e:
-                    logger.critical(f"Failed to write to file: {output_filename} because of exception {e}")
-                    sys.exit(1)
+
+            # Use batched writing instead of immediate file write
+            add_to_buffer(commit_info, output_filename)
         except Exception as e:
             logger.error(f"Failed to get basic info from: {op.cid}, {uri} because of exception: {e}")
 
@@ -127,7 +165,6 @@ if __name__ == '__main__':
 
     logger.info("Starting Firehose Streamer...")
 
-    n_events_per_checkpoint = 20
     shutdown_requested = False
     client = None  # Initialize client variable
 
@@ -136,6 +173,10 @@ if __name__ == '__main__':
         global shutdown_requested, client
         shutdown_requested = True
         logger.info(f"Received signal {signum}. Initiating graceful shutdown...")
+
+        # Flush any remaining events before shutdown
+        flush_buffer()
+
         if client is not None:
             try:
                 client.stop()
@@ -164,7 +205,7 @@ if __name__ == '__main__':
         if not commit.blocks:
             return
         # Update stored state every ~20 events
-        if commit.seq % n_events_per_checkpoint == 0:
+        if commit.seq % N_EVENTS_PER_CHECKPOINT == 0:
             client.update_params(models.ComAtprotoSyncSubscribeRepos.Params(cursor=commit.seq))
             global last_seq
             if not last_seq:
@@ -199,7 +240,7 @@ if __name__ == '__main__':
             latest_json_file = max(json_files, key=lambda x: os.path.getmtime(x))
             # Get the last valid JSON line from the last n_events_per_checkpoint*2 lines
             last_seq = None
-            lines_to_read = n_events_per_checkpoint * 2
+            lines_to_read = N_EVENTS_PER_CHECKPOINT * 2
             
             with open(latest_json_file, 'r', encoding='utf-8', errors='replace') as file:
                 # Get file size
@@ -266,3 +307,5 @@ if __name__ == '__main__':
         client.start(on_message_handler, on_callback_error_handler)
     except Exception as e:
         logger.critical(f"Streamer crashed because of error: {e}")
+        flush_buffer()  # Try to save any buffered events
+        sys.exit(1)
