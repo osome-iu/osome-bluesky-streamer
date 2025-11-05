@@ -34,9 +34,9 @@ import base64
 import signal
 
 
-# Performance tuning 
-BATCH_SIZE = 5
-N_EVENTS_PER_CHECKPOINT = 50
+# Add the steps for each checkpoint (200/10 = 20 events contain each batch)
+BATCH_SIZE = 10 
+N_EVENTS_PER_CHECKPOINT = 200
 
 # Batch buffer
 event_buffer = []
