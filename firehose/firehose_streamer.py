@@ -34,17 +34,15 @@ import base64
 import signal
 
 
-# Add the steps for each checkpoint (200/10 = 20 events contain each batch)
-BATCH_SIZE = 10 
-N_EVENTS_PER_CHECKPOINT = 200
-
 # Batch buffer
 event_buffer = []
 current_output_filename = None
+events_since_checkpoint = 0 # Track events for checkpoint
+N_EVENTS_PER_CHECKPOINT = 20 # No of event per batch/checkpoint
 
 def flush_buffer():
     """Write all buffered events to disk at once"""
-    global event_buffer, current_output_filename
+    global event_buffer, current_output_filename, events_since_checkpoint
     if not event_buffer or not current_output_filename:
         return
         
@@ -57,16 +55,17 @@ def flush_buffer():
             json_file.flush()
             os.fsync(json_file.fileno())  # Force write to disk
             
-        logger.debug(f"Flushed {len(event_buffer)} events to {current_output_filename}")
+        logger.info(f"Flushed {len(event_buffer)} events to {current_output_filename}")
         event_buffer.clear()
+        events_since_checkpoint = 0  # Reset counter after flush
         
     except Exception as e:
         logger.critical(f"Failed to write batch to file: {current_output_filename} because of exception {e}")
         raise
 
 def add_to_buffer(commit_info, output_filename):
-    """Add event to buffer and flush if batch size reached"""
-    global event_buffer, current_output_filename
+    """Add event to buffer and flush if checkpoint reached"""
+    global event_buffer, current_output_filename, events_since_checkpoint
     
     # If filename changed, flush previous buffer
     if current_output_filename and current_output_filename != output_filename:
@@ -74,9 +73,10 @@ def add_to_buffer(commit_info, output_filename):
     
     current_output_filename = output_filename
     event_buffer.append(commit_info)
+    events_since_checkpoint += 1
     
-    # Flush if batch size reached
-    if len(event_buffer) >= BATCH_SIZE:
+    # Flush when we reach the checkpoint size
+    if events_since_checkpoint >= N_EVENTS_PER_CHECKPOINT:
         flush_buffer()
 
 
