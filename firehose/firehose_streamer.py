@@ -37,7 +37,6 @@ import signal
 # Batch buffer
 event_buffer = []
 current_output_filename = None
-events_since_checkpoint = 0 # Track events for checkpoint
 N_EVENTS_PER_CHECKPOINT = 20 # No of event per batch/checkpoint
 
 def flush_buffer():
@@ -63,7 +62,7 @@ def flush_buffer():
         logger.critical(f"Failed to write batch to file: {current_output_filename} because of exception {e}")
         raise
 
-def add_to_buffer(commit_info, output_filename):
+def add_to_buffer(commit_info, output_filename, commit_seq):
     """Add event to buffer and flush if checkpoint reached"""
     global event_buffer, current_output_filename, events_since_checkpoint
     
@@ -73,10 +72,9 @@ def add_to_buffer(commit_info, output_filename):
     
     current_output_filename = output_filename
     event_buffer.append(commit_info)
-    events_since_checkpoint += 1
-    
-    # Flush when we reach the checkpoint size
-    if events_since_checkpoint >= N_EVENTS_PER_CHECKPOINT:
+
+    # Flush when we reach the checkpoint size using sequence number
+    if commit_seq % N_EVENTS_PER_CHECKPOINT == 0:
         flush_buffer()
 
 
@@ -140,7 +138,7 @@ def _get_ops_by_type(commit: models.ComAtprotoSyncSubscribeRepos.Commit) -> dict
                 logger.error(f"Failed to update with info from blocks\nError: {e}\nRecord content not parsed: {record}\nCommit Info: {commit_info}")
 
             # Use batched writing instead of immediate file write
-            add_to_buffer(commit_info, output_filename)
+            add_to_buffer(commit_info, output_filename, commit.seq)
         except Exception as e:
             logger.error(f"Failed to get basic info from: {op.cid}, {uri} because of exception: {e}")
 
