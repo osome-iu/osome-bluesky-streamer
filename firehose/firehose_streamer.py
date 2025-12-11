@@ -130,6 +130,8 @@ if __name__ == '__main__':
     n_events_per_checkpoint = 20
     shutdown_requested = False
     client = None  # Initialize client variable
+    last_seq_file = "last_seq"
+    last_seq = None
 
     def signal_handler(signum, frame):
         """Handle shutdown signals gracefully."""
@@ -148,6 +150,28 @@ if __name__ == '__main__':
     signal.signal(signal.SIGINT, signal_handler)  # Ctrl+C
     signal.signal(signal.SIGTERM, signal_handler)  # Termination signal
 
+    def checkpoint_seq(seq: int, force: bool = False) -> None:
+        """Persist cursor and notify client so we can skip bad events."""
+        global last_seq
+        if last_seq is None:
+            last_seq = seq
+        else:
+            last_seq = max(seq, last_seq)
+
+        if force or (seq % n_events_per_checkpoint == 0):
+            if force:
+                logger.info(f"Forcing checkpoint at seq: {last_seq}")
+            try:
+                client.update_params(models.ComAtprotoSyncSubscribeRepos.Params(cursor=last_seq))
+            except Exception as e:
+                logger.error(f"Failed to update cursor to {last_seq}: {e}")
+
+            try:
+                with open(last_seq_file, 'w+', encoding='utf-8', errors='replace') as file:
+                    file.write(str(last_seq))
+            except Exception as e:
+                logger.error(f"Failed to persist last_seq {last_seq}: {e}")
+
     def on_message_handler(message: firehose_models.MessageFrame) -> None:
         """
         Handle incoming messages from the firehose.
@@ -163,18 +187,16 @@ if __name__ == '__main__':
             return
         if not commit.blocks:
             return
-        # Update stored state every ~20 events
-        if commit.seq % n_events_per_checkpoint == 0:
-            client.update_params(models.ComAtprotoSyncSubscribeRepos.Params(cursor=commit.seq))
-            global last_seq
-            if not last_seq:
-                last_seq = commit.seq
-            else:
-                last_seq = max(commit.seq, last_seq)
-                with open(last_seq_file, 'w+', encoding='utf-8', errors='replace') as file:
-                    file.write(str(last_seq))
-
-        _get_ops_by_type(commit)
+        success = False
+        try:
+            _get_ops_by_type(commit)
+            success = True
+        except Exception as e:
+            logger.error(f"Failed processing commit seq {commit.seq}: {e}")
+        finally:
+            # Always checkpoint; on failure, advance the cursor to skip the bad seq
+            next_seq = commit.seq if success else commit.seq + 1
+            checkpoint_seq(next_seq, force=not success)
 
     def on_callback_error_handler(error: BaseException):
         """
@@ -186,83 +208,67 @@ if __name__ == '__main__':
         logger.error(f'Got error! {error}')
 
     client = FirehoseSubscribeReposClient(base_uri='wss://bsky.network/xrpc')
-    last_seq_file = "last_seq"
-    last_seq = None
 
     try:
         json_files = [file for file in os.listdir() if file.endswith('.json')]
         if last_seq:  # DEBUG only
             client.update_params(models.ComAtprotoSyncSubscribeRepos.Params(cursor=last_seq))
             logger.info(f"Streamer Started with DEBUG seq: {last_seq}")
-        elif len(json_files) > 0:  # if restarting the streamer
-            # Sort the files by modification time and get the most recently modified file
-            latest_json_file = max(json_files, key=lambda x: os.path.getmtime(x))
-            # Get the last valid JSON line from the last n_events_per_checkpoint*2 lines
-            last_seq = None
-            lines_to_read = n_events_per_checkpoint * 2
-            
-            with open(latest_json_file, 'r', encoding='utf-8', errors='replace') as file:
-                # Get file size
-                file.seek(0, os.SEEK_END)
-                file_size = file.tell()
-                
-                # Read backwards to get approximately the last lines_to_read lines
-                chunk_size = 8192  # 8KB chunks
-                buffer = ''
-                position = file_size
-                lines_found = 0
-                
-                while position > 0 and lines_found < lines_to_read:
-                    # Move back by chunk size
-                    position = max(0, position - chunk_size)
-                    file.seek(position)
-                    chunk = file.read(chunk_size if position > 0 else file_size)
-                    
-                    # Prepend to buffer
-                    buffer = chunk + buffer
-                    
-                    # Count newlines to estimate lines
-                    lines_found = buffer.count('\n')
-                
-                # Split into lines and take the last lines_to_read lines
-                lines = buffer.split('\n')
-                if lines[-1] == '':  # Remove empty last line
-                    lines = lines[:-1]
-                
-                # Take only the last lines_to_read lines
-                lines_to_check = lines[-lines_to_read:] if len(lines) > lines_to_read else lines
-                
-                # Process lines from the end to find the last valid JSON line
-                for line in reversed(lines_to_check):
-                    if line.strip():  # Skip empty lines
-                        try:
-                            last_line_json = json.loads(line)
-                            last_seq = int(last_line_json['seq'])
-                            break
-                        except (json.JSONDecodeError, KeyError, ValueError) as e:
-                            logger.warning(f"Skipping corrupted JSON line: {line[:100]}... Error: {e}")
-                            continue
-            
-            if last_seq:
-                client.update_params(models.ComAtprotoSyncSubscribeRepos.Params(cursor=last_seq))
-                logger.info(f"Streamer Started with existing JSON from seq: {last_seq}")
-            else:
-                logger.warning(f"No valid JSON found in last {lines_to_read} lines of {latest_json_file}, falling back to last_seq file")
-                # Fall back to reading from last_seq_file
-                if os.path.exists(last_seq_file):
-                    with open(last_seq_file, 'r', encoding='utf-8', errors='replace') as file:
-                        last_seq = int(file.readline())
-                        client.update_params(models.ComAtprotoSyncSubscribeRepos.Params(cursor=last_seq))
-                        logger.info(f"Streamer Started with fallback file {last_seq_file} from seq: {last_seq}")
-                else:
-                    logger.info("Streamer Started fresh")
-        elif os.path.exists(last_seq_file):
-            with open(last_seq_file, 'r', encoding='utf-8', errors='replace') as file:
-                last_seq = int(file.readline())
-                client.update_params(models.ComAtprotoSyncSubscribeRepos.Params(cursor=last_seq))
-                logger.info(f"Streamer Started with file {last_seq_file} from seq: {last_seq}")
         else:
-            logger.info("Streamer Started fresh")
+            # Primary resume source: last_seq file
+            if os.path.exists(last_seq_file):
+                try:
+                    with open(last_seq_file, 'r', encoding='utf-8', errors='replace') as file:
+                        last_seq = int(file.readline().strip())
+                        client.update_params(models.ComAtprotoSyncSubscribeRepos.Params(cursor=last_seq))
+                        logger.info(f"Streamer Started with file {last_seq_file} from seq: {last_seq}")
+                except Exception as e:
+                    logger.warning(f"Failed to read {last_seq_file}: {e}")
+
+            # Fallback: scan most recent JSON to find last valid line if no saved cursor
+            if last_seq is None and len(json_files) > 0:
+                latest_json_file = max(json_files, key=lambda x: os.path.getmtime(x))
+                last_seq = None
+                lines_to_read = n_events_per_checkpoint * 2
+                
+                with open(latest_json_file, 'r', encoding='utf-8', errors='replace') as file:
+                    file.seek(0, os.SEEK_END)
+                    file_size = file.tell()
+                    chunk_size = 8192  # 8KB chunks
+                    buffer = ''
+                    position = file_size
+                    lines_found = 0
+                    
+                    while position > 0 and lines_found < lines_to_read:
+                        position = max(0, position - chunk_size)
+                        file.seek(position)
+                        chunk = file.read(chunk_size if position > 0 else file_size)
+                        buffer = chunk + buffer
+                        lines_found = buffer.count('\n')
+                    
+                    lines = buffer.split('\n')
+                    if lines[-1] == '':
+                        lines = lines[:-1]
+                    lines_to_check = lines[-lines_to_read:] if len(lines) > lines_to_read else lines
+                    
+                    for line in reversed(lines_to_check):
+                        if line.strip():
+                            try:
+                                last_line_json = json.loads(line)
+                                last_seq = int(last_line_json['seq']) + 1
+                                break
+                            except (json.JSONDecodeError, KeyError, ValueError) as e:
+                                logger.warning(f"Skipping corrupted JSON line: {line[:100]}... Error: {e}")
+                                continue
+
+                if last_seq:
+                    client.update_params(models.ComAtprotoSyncSubscribeRepos.Params(cursor=last_seq))
+                    logger.info(f"Streamer Started with existing JSON from seq: {last_seq}")
+                else:
+                    logger.warning(f"No valid JSON found in last {lines_to_read} lines of {latest_json_file}")
+                    logger.info("Streamer Started fresh")
+            elif last_seq is None:
+                logger.info("Streamer Started fresh")
         client.start(on_message_handler, on_callback_error_handler)
     except Exception as e:
         logger.critical(f"Streamer crashed because of error: {e}")
