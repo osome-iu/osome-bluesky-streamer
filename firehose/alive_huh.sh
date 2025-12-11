@@ -5,7 +5,7 @@ current_date=$(date -u +"%Y-%m-%d")
 filename="${current_date}.json"
 
 # Email variables
-recipient=""  # Replace with your email address
+recipient="pkamburu@iu.edu"  # Replace with your email address
 subject="File Update Alert: ${filename}"
 
 # Check if the file exists
