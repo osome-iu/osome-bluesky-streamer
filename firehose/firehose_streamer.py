@@ -94,12 +94,8 @@ def _get_ops_by_type(commit: models.ComAtprotoSyncSubscribeRepos.Commit) -> dict
                 logger.error(f"Failed to update with info from blocks\nError: {e}\nRecord content not parsed: {record}\nCommit Info: {commit_info}")
             finally:
                 try:
-                    json_data = json.dumps(commit_info, ensure_ascii=True) + '\n'
-                    
-                    with open(output_filename, "a", encoding='utf-8', errors='replace') as json_file:
-                        json_file.write(json_data)
-                        json_file.flush()
-                        os.fsync(json_file.fileno())  # Force write to disk
+                    with open(output_filename, "at+", encoding='utf-8') as json_file:
+                        json_file.write(f'{json.dumps(commit_info, ensure_ascii=False)}\n')
                 except Exception as e:
                     logger.critical(f"Failed to write to file: {output_filename} because of exception {e}")
                     sys.exit(1)
@@ -237,7 +233,7 @@ if __name__ == '__main__':
                     if line.strip():  # Skip empty lines
                         try:
                             last_line_json = json.loads(line)
-                            last_seq = int(last_line_json['seq'])
+                            last_seq = int(last_line_json['seq']) + 1
                             break
                         except (json.JSONDecodeError, KeyError, ValueError) as e:
                             logger.warning(f"Skipping corrupted JSON line: {line[:100]}... Error: {e}")
