@@ -94,12 +94,8 @@ def _get_ops_by_type(commit: models.ComAtprotoSyncSubscribeRepos.Commit) -> dict
                 logger.error(f"Failed to update with info from blocks\nError: {e}\nRecord content not parsed: {record}\nCommit Info: {commit_info}")
             finally:
                 try:
-                    json_data = json.dumps(commit_info, ensure_ascii=True) + '\n'
-                    
-                    with open(output_filename, "a", encoding='utf-8', errors='replace') as json_file:
-                        json_file.write(json_data)
-                        json_file.flush()
-                        os.fsync(json_file.fileno())  # Force write to disk
+                    with open(output_filename, "at+", encoding='utf-8') as json_file:
+                        json_file.write(f'{json.dumps(commit_info, ensure_ascii=False)}\n')
                 except Exception as e:
                     logger.critical(f"Failed to write to file: {output_filename} because of exception {e}")
                     sys.exit(1)
@@ -246,24 +242,39 @@ if __name__ == '__main__':
                         buffer = chunk + buffer
                         lines_found = buffer.count('\n')
                     
-                    lines = buffer.split('\n')
-                    if lines[-1] == '':
-                        lines = lines[:-1]
-                    lines_to_check = lines[-lines_to_read:] if len(lines) > lines_to_read else lines
-                    
-                    for line in reversed(lines_to_check):
-                        if line.strip():
-                            try:
-                                last_line_json = json.loads(line)
-                                last_seq = int(last_line_json['seq']) + 1
-                                break
-                            except (json.JSONDecodeError, KeyError, ValueError) as e:
-                                logger.warning(f"Skipping corrupted JSON line: {line[:100]}... Error: {e}")
-                                continue
-
-                if last_seq:
-                    client.update_params(models.ComAtprotoSyncSubscribeRepos.Params(cursor=last_seq))
-                    logger.info(f"Streamer Started with existing JSON from seq: {last_seq}")
+                    # Count newlines to estimate lines
+                    lines_found = buffer.count('\n')
+                
+                # Split into lines and take the last lines_to_read lines
+                lines = buffer.split('\n')
+                if lines[-1] == '':  # Remove empty last line
+                    lines = lines[:-1]
+                
+                # Take only the last lines_to_read lines
+                lines_to_check = lines[-lines_to_read:] if len(lines) > lines_to_read else lines
+                
+                # Process lines from the end to find the last valid JSON line
+                for line in reversed(lines_to_check):
+                    if line.strip():  # Skip empty lines
+                        try:
+                            last_line_json = json.loads(line)
+                            last_seq = int(last_line_json['seq']) + 1
+                            break
+                        except (json.JSONDecodeError, KeyError, ValueError) as e:
+                            logger.warning(f"Skipping corrupted JSON line: {line[:100]}... Error: {e}")
+                            continue
+            
+            if last_seq:
+                client.update_params(models.ComAtprotoSyncSubscribeRepos.Params(cursor=last_seq))
+                logger.info(f"Streamer Started with existing JSON from seq: {last_seq}")
+            else:
+                logger.warning(f"No valid JSON found in last {lines_to_read} lines of {latest_json_file}, falling back to last_seq file")
+                # Fall back to reading from last_seq_file
+                if os.path.exists(last_seq_file):
+                    with open(last_seq_file, 'r', encoding='utf-8', errors='replace') as file:
+                        last_seq = int(file.readline())
+                        client.update_params(models.ComAtprotoSyncSubscribeRepos.Params(cursor=last_seq))
+                        logger.info(f"Streamer Started with fallback file {last_seq_file} from seq: {last_seq}")
                 else:
                     logger.warning(f"No valid JSON found in last {lines_to_read} lines of {latest_json_file}")
                     logger.info("Streamer Started fresh")
