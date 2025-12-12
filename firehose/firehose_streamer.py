@@ -278,7 +278,7 @@ if __name__ == '__main__':
                 else:
                     logger.warning(f"No valid JSON found in last {lines_to_read} lines of {latest_json_file}")
                     logger.info("Streamer Started fresh")
-            elif last_seq is None:
+            if last_seq is None:
                 logger.info("Streamer Started fresh")
         client.start(on_message_handler, on_callback_error_handler)
     except Exception as e:
