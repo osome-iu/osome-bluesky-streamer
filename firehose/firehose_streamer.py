@@ -97,9 +97,7 @@ def _get_ops_by_type(commit: models.ComAtprotoSyncSubscribeRepos.Commit) -> dict
                     json_data = json.dumps(commit_info, ensure_ascii=True) + '\n'
                     
                     with open(output_filename, "a", encoding='utf-8', errors='replace') as json_file:
-                        json_file.write(json_data)
-                        json_file.flush()
-                        os.fsync(json_file.fileno())  # Force write to disk
+                        json_file.write(f'{json.dumps(commit_info, ensure_ascii=False)}\n')
                 except Exception as e:
                     logger.critical(f"Failed to write to file: {output_filename} because of exception {e}")
                     sys.exit(1)
