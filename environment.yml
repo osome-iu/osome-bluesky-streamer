@@ -41,5 +41,5 @@ dependencies:
       - requests==2.32.5
       - typing-extensions==4.15.0
       - typing-inspection==0.4.2
-      - urllib3==2.6.1
+      - urllib3==2.6.3
       - websockets==15.0.1
