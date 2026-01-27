@@ -19,7 +19,7 @@ IFS=$'\n\t'
 # =============================================================================
 
 # Email / notification settings
-recipient="recipient-email"
+email_recipients="multiple emails"
 
 # --- CONFIGURATION ---
 # Default hardcoded fallback Python path
@@ -55,23 +55,23 @@ send_email() {
   local message="$2"
   
   if [[ $DRY_RUN -eq 1 ]]; then
-    log "[DRY RUN] Would send email to $recipient"
+    log "[DRY RUN] Would send email to $email_recipients"
     log "[DRY RUN] Subject: $subject"
     log "[DRY RUN] Message: $message"
     return 0
   fi
   
   if command -v mail &>/dev/null; then
-    echo "$message" | mail -s "$subject" "$recipient"
-    log "Email sent to $recipient"
+    echo "$message" | mail -s "$subject" $email_recipients
+    log "Email sent to $email_recipients"
   elif command -v sendmail &>/dev/null; then
     {
       echo "Subject: $subject"
-      echo "To: $recipient"
+      echo "To: $email_recipients"
       echo ""
       echo "$message"
-    } | sendmail "$recipient"
-    log "Email sent to $recipient via sendmail"
+    } | sendmail $email_recipients
+    log "Email sent to $email_recipients via sendmail"
   else
     log "Warning: Could not send email. No mail or sendmail command found."
     return 1
