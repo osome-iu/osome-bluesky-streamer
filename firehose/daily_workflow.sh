@@ -18,12 +18,15 @@ IFS=$'\n\t'
 #    ./daily_workflow.sh --help
 # =============================================================================
 
+# Email / notification settings
+recipient="recipient-email"
+
 # --- CONFIGURATION ---
 # Default hardcoded fallback Python path
-FALLBACK_PYTHON="/path/to/osome-bluesky-streamer/venv/bin/python"
+FALLBACK_PYTHON="/python/fallback/path"
 backup_root_folders=(
-  # "/path/to/backup/folder"
-  # "/another/backup/folder"
+  "/path/to/backup/folder_1"
+  "/path/to/backup/folder_2"
 ) # default empty; will use "./current_directory/backup" if none specified
 
 # --- FUNCTIONS ---
@@ -45,6 +48,34 @@ EOF
 
 log() {
   echo "[$(date -u +'%Y-%m-%d %H:%M:%S')] $*"
+}
+
+send_email() {
+  local subject="$1"
+  local message="$2"
+  
+  if [[ $DRY_RUN -eq 1 ]]; then
+    log "[DRY RUN] Would send email to $recipient"
+    log "[DRY RUN] Subject: $subject"
+    log "[DRY RUN] Message: $message"
+    return 0
+  fi
+  
+  if command -v mail &>/dev/null; then
+    echo "$message" | mail -s "$subject" "$recipient"
+    log "Email sent to $recipient"
+  elif command -v sendmail &>/dev/null; then
+    {
+      echo "Subject: $subject"
+      echo "To: $recipient"
+      echo ""
+      echo "$message"
+    } | sendmail "$recipient"
+    log "Email sent to $recipient via sendmail"
+  else
+    log "Warning: Could not send email. No mail or sendmail command found."
+    return 1
+  fi
 }
 
 # --- LOGGING SETUP ---
@@ -140,8 +171,24 @@ if [[ "$current_dir_name" != "firehose" ]]; then
   exit 1
 fi
 
+# --- CHECK IF LOCAL FILE EXISTS ---
 if [[ ! -f "$local_file" ]]; then
-  log "Error: Local file $local_file not found."; exit 1
+  error_msg="Local file $local_file not found."
+  log "Error: $error_msg"
+  
+  # Send email about missing file
+  subject="[BLUESKY WORKFLOW ERROR] Data file not found: $local_file"
+  message="Bluesky firehose daily workflow failed because the expected data file was not found.
+
+Error: $error_msg
+Date: $yesterday
+Time: $(date -u +'%H:%M:%S UTC')
+Current directory: $(pwd)
+
+Please check if the data collection process ran successfully for this date."
+  
+  send_email "$subject" "$message"
+  exit 1
 fi
 
 # --- COUNT TYPES ---
@@ -181,6 +228,7 @@ if [[ ${#backup_root_folders[@]} -eq 0 ]]; then
 fi
 
 all_backups_success=1
+failed_backup_location=""
 
 for backup_root_folder in "${backup_root_folders[@]}"; do
   target_backup_folder="$backup_root_folder/$yesterdays_yyyy_mm"
@@ -190,7 +238,8 @@ for backup_root_folder in "${backup_root_folders[@]}"; do
   if [[ ! -d "$backup_root_folder" ]]; then
     log "Skipping $backup_root_folder (not found)"
     all_backups_success=0
-    continue
+    failed_backup_location="$backup_root_folder"
+    break
   fi
 
   if [[ $DRY_RUN -eq 1 ]]; then
@@ -208,13 +257,30 @@ for backup_root_folder in "${backup_root_folders[@]}"; do
       else
         log "Warning: Size mismatch at $target_backup_folder"
         all_backups_success=0
+        failed_backup_location="$backup_root_folder"
+        break
       fi
     else
       log "Backup failed for $backup_root_folder"
       all_backups_success=0
+      failed_backup_location="$backup_root_folder"
+      break
     fi
   fi
 done
+
+# --- SEND EMAIL IF BACKUP FAILED ---
+if [[ $all_backups_success -eq 0 && -n "$failed_backup_location" ]]; then
+  subject="[BLUESKY BACKUP FAILURE] Backup to $failed_backup_location failed"
+  message="Bluesky firehose backup script failed for location: $failed_backup_location
+    
+Date: $yesterday
+Time: $(date -u +'%H:%M:%S UTC')
+    
+Please check the backup location and server logs."
+  
+  send_email "$subject" "$message"
+fi
 
 # --- CLEANUP ---
 if [[ $DRY_RUN -eq 1 ]]; then
