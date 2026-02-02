@@ -2,7 +2,7 @@
 
 ## Quick start
 
-Stream *live data to yyyy-mm-dd.json file, no Auth needed
+Stream *live data to `yyyy-mm-dd.json` file, no Auth needed
 ```
 conda activate ../venv/
 python firehose_streamer.py
@@ -20,3 +20,5 @@ It will try to pickup from where it stopped and keep running indefinitely.
 ## Documentation
 
 This firehose streamer is built using the [AT Protocol SDK](https://atproto.blue/en/latest/index.html). 
+
+`firehose/docs` contains design documentations.
