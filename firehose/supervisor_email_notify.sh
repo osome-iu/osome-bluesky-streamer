@@ -119,19 +119,16 @@ while true; do
     echo "$log_line" >> "$LOGFILE"
 
     subject="Supervisor: $process → $to_state"
-    body=$(cat <<EOF
-      Supervisor detected a process state change.
-
-      Process: $process
-      From:    $from_state
-      To:      $to_state
-      Host:    $(hostname)
-      Time:    $timestamp
-
-      Raw Event:
-      $payload
-      EOF
-    )
+    body="Supervisor detected a process state change.
+ 
+Process: $process
+From:    $from_state
+To:      $to_state
+Host:    $(hostname)
+Time:    $timestamp
+ 
+Raw Event:
+$payload"
 
     if ! echo "$body" | mailx -s "$subject" $email_recipients; then
       echo "[$timestamp] ❌ Failed to send email for $process ($to_state)" >> "$LOGFILE"
