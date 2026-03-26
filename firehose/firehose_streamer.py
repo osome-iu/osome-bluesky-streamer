@@ -37,7 +37,7 @@ import signal
 # Batch buffer
 event_buffer = []
 current_output_filename = None
-N_EVENTS_PER_CHECKPOINT = 400 # No of event per batch/checkpoint
+N_EVENTS_PER_CHECKPOINT = 200 # No of event per batch/checkpoint
 
 def flush_buffer():
     """Write all buffered events to disk at once"""
