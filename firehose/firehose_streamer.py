@@ -226,12 +226,16 @@ if __name__ == '__main__':
             return
         if not commit.blocks:
             return
+
         success = False
         try:
             _get_ops_by_type(commit)
             success = True
         except Exception as e:
             logger.error(f"Failed processing commit seq {commit.seq}: {e}")
+        except BaseException as e:  # Catches pyo3 PanicException
+            logger.error(f"Low-level panic at seq {commit.seq}, skipping: {e}")
+            success = False
         finally:
             # Always checkpoint; on failure, advance the cursor to skip the bad seq
             next_seq = commit.seq if success else commit.seq + 1
