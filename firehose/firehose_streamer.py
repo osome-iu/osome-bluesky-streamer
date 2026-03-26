@@ -212,12 +212,6 @@ if __name__ == '__main__':
                 logger.error(f"Failed to persist last_seq {last_seq}: {e}")
 
     def on_message_handler(message: firehose_models.MessageFrame) -> None:
-        """
-        Handle incoming messages from the firehose.
-
-        Args:
-            message (firehose_models.MessageFrame): The incoming message frame.
-        """
         if shutdown_requested:
             return
             
@@ -226,14 +220,17 @@ if __name__ == '__main__':
             return
         if not commit.blocks:
             return
+
         success = False
         try:
             _get_ops_by_type(commit)
             success = True
         except Exception as e:
             logger.error(f"Failed processing commit seq {commit.seq}: {e}")
+        except BaseException as e:  # Catches pyo3 PanicException
+            logger.error(f"Low-level panic at seq {commit.seq}, skipping: {e}")
+            success = False
         finally:
-            # Always checkpoint; on failure, advance the cursor to skip the bad seq
             next_seq = commit.seq if success else commit.seq + 1
             checkpoint_seq(next_seq, force=not success)
 
