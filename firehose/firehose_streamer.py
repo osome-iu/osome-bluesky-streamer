@@ -105,7 +105,7 @@ def _get_ops_by_type(commit: models.ComAtprotoSyncSubscribeRepos.Commit) -> dict
     collected_at_datetime = datetime.now(timezone.utc)
     collected_at = collected_at_datetime.timestamp()
     collected_at_str = collected_at_datetime.strftime(input_date_format)
-    commit_timestamp = None
+    commit_timestamp = ""
 
     try:
         commit_timestamp = datetime.strptime(commit.time, input_date_format).timestamp()
@@ -153,10 +153,11 @@ def _get_ops_by_type(commit: models.ComAtprotoSyncSubscribeRepos.Commit) -> dict
 
 if __name__ == '__main__':
     # Configure the logger
-    log_folder = "log"
-    # Ensure log folder exists
-    if not os.path.exists(log_folder):
-        os.makedirs(log_folder)
+    script_dir = os.path.dirname(os.path.abspath(__file__))
+    log_folder = os.path.join(script_dir, "log")
+    if os.path.exists(log_folder) and not os.path.isdir(log_folder):
+        log_folder = os.path.join(script_dir, "runtime_log")
+    os.makedirs(log_folder, exist_ok=True)
 
     logging.basicConfig(
         level=logging.INFO,
