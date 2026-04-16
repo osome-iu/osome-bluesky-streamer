@@ -105,8 +105,16 @@ def _get_ops_by_type(commit: models.ComAtprotoSyncSubscribeRepos.Commit) -> dict
     collected_at_datetime = datetime.now(timezone.utc)
     collected_at = collected_at_datetime.timestamp()
     collected_at_str = collected_at_datetime.strftime(input_date_format)
-    commit_datetime = datetime.strptime(commit.time, input_date_format)
-    commit_timestamp = commit_datetime.timestamp()
+    commit_timestamp = None
+
+    try:
+        commit_timestamp = datetime.strptime(commit.time, input_date_format).timestamp()
+    except (TypeError, ValueError):
+        try:
+            commit_timestamp = datetime.fromisoformat(commit.time.replace("Z", "+00:00")).timestamp()
+        except (AttributeError, TypeError, ValueError) as e:
+            logger.warning(f"Failed to parse commit time '{commit.time}': {e}")
+
     collect_date = collected_at_datetime.strftime(output_date_format)
     output_filename = f"{collect_date}.json"
 
