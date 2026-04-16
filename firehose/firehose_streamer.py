@@ -54,7 +54,7 @@ def flush_buffer():
             json_file.flush()
             os.fsync(json_file.fileno())  # Force write to disk
 
-        logger.info(f"Flushed {len(event_buffer)} events to {current_output_filename}")
+        logger.debug(f"Flushed {len(event_buffer)} events to {current_output_filename}")
         event_buffer.clear()
         events_since_checkpoint = 0  # Reset counter after flush
 
