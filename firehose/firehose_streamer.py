@@ -98,7 +98,15 @@ def _get_ops_by_type(commit: models.ComAtprotoSyncSubscribeRepos.Commit) -> dict
     Args:
         commit (models.ComAtprotoSyncSubscribeRepos.Commit): The commit message to process.
     """
-    car = CAR.from_bytes(commit.blocks)
+
+    try:
+        car = CAR.from_bytes(commit.blocks)
+    except Exception as e:
+        logger.error(f"CAR decode failed for seq {commit.seq}: {e}")
+        return
+    except BaseException as e:
+        logger.error(f"CAR decode panic for seq {commit.seq}: {e}")
+        return
     
     input_date_format = "%Y-%m-%dT%H:%M:%S.%fZ"
     output_date_format = "%Y-%m-%d"
@@ -220,26 +228,32 @@ if __name__ == '__main__':
         """
         if shutdown_requested:
             return
-            
-        commit = parse_subscribe_repos_message(message)
-        if not isinstance(commit, models.ComAtprotoSyncSubscribeRepos.Commit):
-            return
-        if not commit.blocks:
-            return
 
-        success = False
         try:
-            _get_ops_by_type(commit)
-            success = True
-        except Exception as e:
-            logger.error(f"Failed processing commit seq {commit.seq}: {e}")
-        except BaseException as e:  # Catches pyo3 PanicException
-            logger.error(f"Low-level panic at seq {commit.seq}, skipping: {e}")
+            commit = parse_subscribe_repos_message(message)
+            if not isinstance(commit, models.ComAtprotoSyncSubscribeRepos.Commit):
+                return
+            if not commit.blocks:
+                return
+
             success = False
-        finally:
-            # Always checkpoint; on failure, advance the cursor to skip the bad seq
-            next_seq = commit.seq if success else commit.seq + 1
-            checkpoint_seq(next_seq, force=not success)
+            try:
+                _get_ops_by_type(commit)
+                success = True
+            except Exception as e:
+                logger.error(f"Failed processing commit seq {commit.seq}: {e}")
+            except BaseException as e:  # Catches pyo3 PanicException
+                logger.error(f"Low-level panic at seq {commit.seq}, skipping: {e}")
+                success = False
+            finally:
+                # Always checkpoint; on failure, advance the cursor to skip the bad seq
+                next_seq = commit.seq if success else commit.seq + 1
+                checkpoint_seq(next_seq, force=not success)
+
+        except BaseException as e:
+            # Outer safety net: catches any PanicException that escapes inner handlers
+            logger.error(f"Unhandled low-level exception in message handler: {e}")
+
 
     def on_callback_error_handler(error: BaseException):
         """
