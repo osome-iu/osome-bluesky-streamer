@@ -19,6 +19,12 @@ import logging
 
 class PLCDataExporter:
     def __init__(
+        self,
+        data_file="plc_data.jsonl",
+        timestamp_file="last_timestamp.txt",
+        log_dir="log/",
+        log_file="plc_export.log",
+    ):
         self.url = "https://plc.directory/export"
         self.params = {"count": 1000}
         self.data_file = data_file
@@ -48,7 +54,7 @@ class PLCDataExporter:
         getattr(self.logger, level)(message)
 
     def _save_last_timestamp(self, timestamp):
-        with open(self.timestamp_file, 'w') as file:
+        with open(self.timestamp_file, "w", encoding="utf-8") as file:
             file.write(timestamp)
 
     def _read_last_timestamp(self):
