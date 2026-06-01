@@ -13,8 +13,8 @@
 
 # ── Configuration ────────────────────────────────────────────────────────────
 
-email_recipients="email@example.com"
-LOGFILE="path/to/log/folder"
+email_recipients="email recipients"
+LOGFILE="/path/to/logfile"
 
 STATE_DIR="/tmp/supervisor_monitor"
 
