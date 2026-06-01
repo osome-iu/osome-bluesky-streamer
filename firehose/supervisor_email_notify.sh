@@ -1,9 +1,30 @@
 #!/bin/bash
-# Improved Supervisor eventlistener: logs + emails on all PROCESS_STATE changes
-# Drop this into supervisor_email_notify.sh and make executable (chmod +x).
+# Supervisor eventlistener: smart email alerting with flap detection,
+# stuck-state monitoring, and per-process cooldowns.
+#
+# Alert conditions:
+#   1. Restart loop  — process hits BACKOFF/EXITED/FATAL ≥ FLAP_THRESHOLD
+#                      times within FLAP_WINDOW seconds
+#   2. Stuck STARTING — process stays in STARTING for > STARTING_DELAY seconds
+#   3. Stuck bad state — process stays in FATAL/BACKOFF/EXITED/STOPPED for
+#                        > BAD_STATE_DELAY seconds
+#   4. FATAL (immediate) — process reaches FATAL state (always alert once
+#                           cooldown allows, no delay needed)
 
-email_recipients="email recipients"
-LOGFILE="/path/to/logfile"
+# ── Configuration ────────────────────────────────────────────────────────────
+
+email_recipients="email@example.com"
+LOGFILE="path/to/log/folder"
+
+STATE_DIR="/tmp/supervisor_monitor"
+
+STARTING_DELAY=300    # seconds before alerting on a stuck STARTING state
+BAD_STATE_DELAY=300   # seconds before alerting on a stuck FATAL/BACKOFF/EXITED/STOPPED
+FLAP_WINDOW=300       # rolling window (seconds) used to count restarts
+FLAP_THRESHOLD=5      # restart count within FLAP_WINDOW that triggers a flap alert
+COOLDOWN=600          # minimum seconds between emails for the same process
+
+MAX_LEN=1048576       # max payload bytes (1 MiB)
 
 # Optional mailx SMTP (uncomment and configure if needed)
 # export MAILRC=/dev/null
@@ -13,133 +34,275 @@ LOGFILE="/path/to/logfile"
 #   -S smtp-auth-password='your-app-password' \
 #   -S from='Supervisor <your@gmail.com>'"
 
-# Maximum allowed payload length (bytes) to avoid runaway reads on corrupt headers
-MAX_LEN=1048576   # 1 MiB, tune if necessary
+# ── Helpers ───────────────────────────────────────────────────────────────────
 
+mkdir -p "$STATE_DIR"
 mkdir -p "$(dirname "$LOGFILE")"
 touch "$LOGFILE"
 chmod 644 "$LOGFILE"
 
-echo "[$(date '+%Y-%m-%d %H:%M:%S')] Email listener started." >> "$LOGFILE"
+log() {
+  echo "[$(date '+%Y-%m-%d %H:%M:%S')] $*" >> "$LOGFILE"
+}
 
-while true; do
-  # Tell supervisor we're ready for the next event. Supervisor expects a newline.
-  echo "READY"
+send_email() {
+  local subject="$1"
+  local body="$2"
+  local process="$3"   # used only for log messages
 
-  # Read header line (raw). Use -r to avoid backslash escapes.
-  if ! IFS= read -r header; then
-    echo "[$(date '+%Y-%m-%d %H:%M:%S')] read header failed — exiting." >> "$LOGFILE"
-    break
+  if ! echo "$body" | mailx -s "$subject" $email_recipients; then
+    log "❌ Failed to send email for $process — subject: $subject"
+  else
+    log "✅ Email sent for $process — subject: $subject"
+  fi
+}
+
+# Returns 0 (true) if we are outside the cooldown window for $process and
+# updates the cooldown timestamp.  Returns 1 (false) if still in cooldown.
+should_send_alert() {
+  local process="$1"
+  local now
+  now=$(date +%s)
+  local cooldown_file="$STATE_DIR/${process}.cooldown"
+
+  if [[ -f "$cooldown_file" ]]; then
+    local last
+    last=$(cat "$cooldown_file")
+    if (( now - last < COOLDOWN )); then
+      log "  Cooldown active for $process — skipping alert ($(( COOLDOWN - (now - last) ))s remaining)"
+      return 1
+    fi
   fi
 
-  # Trim trailing CR if present (some senders include \r\n)
+  echo "$now" > "$cooldown_file"
+  return 0
+}
+
+# ── State-change handlers ─────────────────────────────────────────────────────
+
+handle_starting() {
+  local process="$1"
+  local now
+  now=$(date +%s)
+  local start_file="$STATE_DIR/${process}.starting"
+
+  echo "$now" > "$start_file"
+  log "  Recorded STARTING timestamp for $process — will alert if not RUNNING within ${STARTING_DELAY}s"
+
+  # Subshell: wake up after the delay and alert if still stuck
+  (
+    sleep "$STARTING_DELAY"
+    if [[ -f "$start_file" ]]; then
+      local saved
+      saved=$(cat "$start_file")
+      if [[ "$saved" == "$now" ]]; then
+        if should_send_alert "$process"; then
+          local subject="Supervisor: $process stuck in STARTING"
+          local body
+          body="Process $process has been in STARTING for over $(( STARTING_DELAY / 60 )) minutes.
+
+Host:    $(hostname)
+Time:    $(date)
+Process: $process"
+          send_email "$subject" "$body" "$process"
+          log "🚨 STARTING stuck alert sent for $process"
+        fi
+      fi
+    fi
+  ) &
+}
+
+handle_running() {
+  local process="$1"
+  # Clear stuck-state sentinels when the process recovers
+  rm -f "$STATE_DIR/${process}.starting"
+  rm -f "$STATE_DIR/${process}.bad"
+  log "  $process is RUNNING — cleared stuck-state sentinels"
+}
+
+handle_flap_state() {
+  # Called for BACKOFF / EXITED / FATAL — records the event and checks for a
+  # restart loop within FLAP_WINDOW.
+  local process="$1"
+  local to_state="$2"
+  local now
+  now=$(date +%s)
+  local flap_file="$STATE_DIR/${process}.flap"
+
+  # Append current timestamp
+  echo "$now" >> "$flap_file"
+
+  # Prune entries older than FLAP_WINDOW
+  local tmp_file="${flap_file}.tmp"
+  awk -v now="$now" -v window="$FLAP_WINDOW" \
+    '$1 >= now - window' "$flap_file" > "$tmp_file" && mv "$tmp_file" "$flap_file"
+
+  local count
+  count=$(wc -l < "$flap_file")
+  log "  Flap count for $process: $count / $FLAP_THRESHOLD in last ${FLAP_WINDOW}s"
+
+  if (( count >= FLAP_THRESHOLD )); then
+    if should_send_alert "$process"; then
+      local subject="Supervisor: $process restart loop detected"
+      local body
+      body="Process $process has restarted $count times within the last $(( FLAP_WINDOW / 60 )) minutes.
+
+Host:    $(hostname)
+Time:    $(date)
+Process: $process
+State:   $to_state
+
+Recent event timestamps:
+$(cat "$flap_file")"
+      send_email "$subject" "$body" "$process"
+      log "🚨 Restart loop alert sent for $process ($count events in ${FLAP_WINDOW}s)"
+    fi
+  fi
+}
+
+handle_bad_state() {
+  # Called for FATAL / BACKOFF / EXITED / STOPPED — sets a sentinel and
+  # schedules a delayed alert if the process remains in this state.
+  local process="$1"
+  local to_state="$2"
+  local now
+  now=$(date +%s)
+  local bad_file="$STATE_DIR/${process}.bad"
+
+  echo "$now" > "$bad_file"
+  log "  Recorded bad-state ($to_state) timestamp for $process — will alert if not recovered within ${BAD_STATE_DELAY}s"
+
+  (
+    sleep "$BAD_STATE_DELAY"
+    if [[ -f "$bad_file" ]]; then
+      local saved
+      saved=$(cat "$bad_file")
+      if [[ "$saved" == "$now" ]]; then
+        if should_send_alert "$process"; then
+          local subject="Supervisor: $process stuck in $to_state"
+          local body
+          body="Process $process has remained in $to_state for over $(( BAD_STATE_DELAY / 60 )) minutes with no recovery.
+
+Host:    $(hostname)
+Time:    $(date)
+Process: $process
+State:   $to_state"
+          send_email "$subject" "$body" "$process"
+          log "🚨 Stuck bad-state ($to_state) alert sent for $process"
+        fi
+      fi
+    fi
+  ) &
+}
+
+# ── Main event loop ───────────────────────────────────────────────────────────
+
+log "Email listener started."
+
+while true; do
+  echo "READY"
+
+  # ── Read header ──
+  if ! IFS= read -r header; then
+    log "read header failed — exiting."
+    break
+  fi
   header=${header%$'\r'}
+  log "Received header: $header"
 
-  echo "[$(date '+%Y-%m-%d %H:%M:%S')] Received header: $header" >> "$LOGFILE"
-
-  # Extract length (len:<number>) robustly
+  # ── Extract payload length ──
   if [[ "$header" =~ len:([0-9]+) ]]; then
     len=${BASH_REMATCH[1]}
   else
-    echo "[$(date '+%Y-%m-%d %H:%M:%S')] Warning: No length found in header: $header" >> "$LOGFILE"
-    # Acknowledge with empty result and continue
+    log "Warning: No length found in header: $header"
     echo -ne "RESULT 2\nOK"
     continue
   fi
 
-  # Validate len is numeric and within sane bounds
-  if ! [[ "$len" =~ ^[0-9]+$ ]]; then
-    echo "[$(date '+%Y-%m-%d %H:%M:%S')] Warning: Non-numeric length: $len" >> "$LOGFILE"
-    echo -ne "RESULT 2\nOK"
-    continue
-  fi
-
-  if (( len <= 0 )); then
-    echo "[$(date '+%Y-%m-%d %H:%M:%S')] Warning: zero or negative length: $len" >> "$LOGFILE"
+  if ! [[ "$len" =~ ^[0-9]+$ ]] || (( len <= 0 )); then
+    log "Warning: Invalid length value: $len"
     echo -ne "RESULT 2\nOK"
     continue
   fi
 
   if (( len > MAX_LEN )); then
-    echo "[$(date '+%Y-%m-%d %H:%M:%S')] Warning: length $len exceeds MAX_LEN ($MAX_LEN). Skipping." >> "$LOGFILE"
-    # consume and discard the payload so we remain in sync
-    dd if=/dev/stdin bs=1 count=$len of=/dev/null 2>/dev/null || {
-      # fallback: attempt to read into /dev/null with read -N repeatedly
-      remaining=$len
-      while (( remaining > 0 )); do
-        chunk=$(( remaining > 4096 ? 4096 : remaining ))
-        IFS= read -r -N "$chunk" _ || break
-        remaining=$(( remaining - chunk ))
-      done
-    }
+    log "Warning: length $len exceeds MAX_LEN ($MAX_LEN) — discarding payload."
+    dd if=/dev/stdin bs=1 count="$len" of=/dev/null 2>/dev/null
     echo -ne "RESULT 2\nOK"
     continue
   fi
 
-  # Read payload of exactly $len bytes
+  # ── Read payload ──
   if ! IFS= read -r -N "$len" payload; then
-    echo "[$(date '+%Y-%m-%d %H:%M:%S')] Warning: failed to read payload of length $len" >> "$LOGFILE"
+    log "Warning: failed to read payload of length $len"
     echo -ne "RESULT 2\nOK"
     continue
   fi
-
-  # Trim possible trailing CR from payload (helps when payload lines end with \r\n)
   payload=${payload%$'\r'}
 
   timestamp=$(date '+%Y-%m-%d %H:%M:%S')
 
-  # Parse event name from header by looking for eventname:<value>
+  # ── Parse event name ──
   if [[ "$header" =~ eventname:([^[:space:]]+) ]]; then
     event_name=${BASH_REMATCH[1]}
   else
-    # As a fallback, try first token (legacy), but prefer eventname: token
     event_name=$(echo "$header" | awk '{print $1}')
   fi
 
-  # Only process PROCESS_STATE events
-  if [[ "$event_name" == PROCESS_STATE_* ]]; then
-    # Defaults
-    process="unknown"
-    from_state="unknown"
-
-    # Extract processname from payload (payload is like "processname:foo groupname:bar ...")
-    if [[ "$payload" =~ processname:([^[:space:],]+) ]]; then
-      process=${BASH_REMATCH[1]}
-    fi
-
-    # Extract from_state from payload
-    if [[ "$payload" =~ from_state:([^[:space:],]+) ]]; then
-      from_state=${BASH_REMATCH[1]}
-    fi
-
-    # Determine to_state by stripping prefix
-    to_state=${event_name#PROCESS_STATE_}
-
-    log_line="[$timestamp] $process changed: $from_state → $to_state"
-    echo "$log_line" >> "$LOGFILE"
-
-    subject="Supervisor: $process → $to_state"
-    body="Supervisor detected a process state change.
- 
-Process: $process
-From:    $from_state
-To:      $to_state
-Host:    $(hostname)
-Time:    $timestamp
- 
-Raw Event:
-$payload"
-
-    if ! echo "$body" | mailx -s "$subject" $email_recipients; then
-      echo "[$timestamp] ❌ Failed to send email for $process ($to_state)" >> "$LOGFILE"
-    else
-      echo "[$timestamp] ✅ Email sent for $process ($to_state)" >> "$LOGFILE"
-    fi
-  else
-    # Log non-PROCESS_STATE events but don't email
-    echo "[$timestamp] Skipping non-PROCESS_STATE event: $event_name" >> "$LOGFILE"
+  # ── Only handle PROCESS_STATE_* events ──
+  if [[ "$event_name" != PROCESS_STATE_* ]]; then
+    log "Skipping non-PROCESS_STATE event: $event_name"
+    echo -ne "RESULT 2\nOK"
+    continue
   fi
 
-  # Tell supervisor we're done for this event
+  # ── Parse process name and states ──
+  process="unknown"
+  from_state="unknown"
+
+  [[ "$payload" =~ processname:([^[:space:],]+) ]] && process=${BASH_REMATCH[1]}
+  [[ "$payload" =~ from_state:([^[:space:],]+) ]]  && from_state=${BASH_REMATCH[1]}
+
+  to_state=${event_name#PROCESS_STATE_}
+
+  log "$process changed: $from_state → $to_state"
+
+  # ── Route to the appropriate handler ──
+  case "$to_state" in
+
+    STARTING)
+      handle_starting "$process"
+      ;;
+
+    RUNNING)
+      handle_running "$process"
+      ;;
+
+    BACKOFF|EXITED)
+      # Flap tracking only — bad-state delayed alert not needed here because
+      # supervisor will attempt a restart automatically; we care about loops.
+      handle_flap_state "$process" "$to_state"
+      handle_bad_state  "$process" "$to_state"
+      ;;
+
+    FATAL)
+      # FATAL means supervisor has given up — track flap history AND set a
+      # bad-state sentinel for the stuck-state delayed alert.
+      handle_flap_state "$process" "$to_state"
+      handle_bad_state  "$process" "$to_state"
+      ;;
+
+    STOPPED)
+      # Intentional stops are common (deploys, maintenance).  Only alert if
+      # the process stays stopped for longer than BAD_STATE_DELAY.
+      handle_bad_state "$process" "$to_state"
+      ;;
+
+    UNKNOWN|EXITED)
+      log "  Unhandled to_state '$to_state' for $process — no action taken."
+      ;;
+
+  esac
+
   echo -ne "RESULT 2\nOK"
 done
