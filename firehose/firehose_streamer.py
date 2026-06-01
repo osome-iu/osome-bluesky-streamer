@@ -153,11 +153,9 @@ def _get_ops_by_type(commit: models.ComAtprotoSyncSubscribeRepos.Commit) -> dict
 
 if __name__ == '__main__':
     # Configure the logger
-    script_dir = os.path.dirname(os.path.abspath(__file__))
-    log_folder = os.path.join(script_dir, "log")
-    if os.path.exists(log_folder) and not os.path.isdir(log_folder):
-        log_folder = os.path.join(script_dir, "runtime_log")
+    log_folder = "log"
     os.makedirs(log_folder, exist_ok=True)
+    os.chmod(log_folder, 0o755)  # fix umask issue on every restart
 
     logging.basicConfig(
         level=logging.INFO,
