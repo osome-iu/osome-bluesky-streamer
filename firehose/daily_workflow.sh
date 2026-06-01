@@ -84,7 +84,7 @@ send_email() {
 
 # --- LOGGING SETUP ---
 log_dir="log"
-mkdir "$log_dir"
+mkdir -p "$log_dir"
 today="$(date -u +"%Y-%m-%d")"
 logfile="$log_dir/daily_workflow_${today}.log"
 exec > >(tee -a "$logfile") 2>&1
