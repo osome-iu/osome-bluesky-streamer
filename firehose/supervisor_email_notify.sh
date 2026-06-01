@@ -276,6 +276,20 @@ while true; do
 
     RUNNING)
       handle_running "$process"
+      # Send a recovery email when email_on_state_change itself comes back up
+      if [[ "$process" == "email_on_state_change" ]]; then
+        subject="Supervisor: email_on_state_change is back up"
+        body="The supervisor event listener has restarted and is running.
+
+    Host:    $(hostname)
+    Time:    $(date)
+    Process: $process
+    From:    $from_state → RUNNING
+
+    Email alerts have resumed."
+        send_email "$subject" "$body" "$process"
+        log "📧 RUNNING email sent for $process"
+      fi
       ;;
 
     BACKOFF|EXITED)
@@ -291,6 +305,19 @@ while true; do
       handle_flap_state "$process" "$to_state"
       handle_bad_state  "$process" "$to_state"
       ;;
+
+    STOPPING)
+        # Bypass cooldown — always alert on STOPPING so manual restarts are never missed
+        subject="Supervisor: $process is stopping"
+        body="Process $process is being stopped.
+
+    Host:    $(hostname)
+    Time:    $(date)
+    Process: $process
+    From:    $from_state → STOPPING"
+        send_email "$subject" "$body" "$process"
+        log "📧 STOPPING alert sent for $process"
+    ;;
 
     STOPPED)
       # Intentional stops are common (deploys, maintenance).  Only alert if
