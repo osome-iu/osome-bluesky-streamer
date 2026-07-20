@@ -12,6 +12,13 @@ current_date=$(date -u +"%Y-%m-%d")
 filename="${current_date}.json"
 recipients="recipient_emails"
 subject="Streamer Lag Alert"
+tail_lines=10
+alert_threshold_seconds=3600
+skipped_alert_threshold=1
+error_log=$(mktemp)
+skipped_log=$(mktemp)
+
+trap 'rm -f "$error_log" "$skipped_log"' EXIT
 
 # Check if today's file exists
 if [ ! -f "$filename" ]; then
@@ -20,58 +27,126 @@ if [ ! -f "$filename" ]; then
     exit 1
 fi
 
+# Inspect a recent window and alert only if even the smallest lag in that window is large.
+export SKIPPED_LOG="$skipped_log"
+window_stats=$(tail -n "$tail_lines" "$filename" | python3 -c '
+import json
+import os
+import sys
+from datetime import datetime, timezone
 
-# Get the last complete line from the file
-last_line=$(tail -n 1 "$filename")
+INPUT_DATE_FORMAT = "%Y-%m-%dT%H:%M:%S.%fZ"
+SKIPPED_LINE_PREVIEW_LENGTH = 300
 
-# Use the extracting method.
-timestamps=$(python3 -c "
-import json, sys
-try:
-    data = json.loads(sys.argv[1])
-    collected = data.get('collected_at_str', '')
-    commit = data.get('commit_time_str', '')
-    print(f'{collected}|{commit}')
-except:
-    print('ERROR')
-" "$last_line")
+def parse_timestamp(value):
+    try:
+        return datetime.strptime(value, INPUT_DATE_FORMAT).replace(tzinfo=timezone.utc).timestamp()
+    except ValueError:
+        return datetime.fromisoformat(value.replace("Z", "+00:00")).timestamp()
+
+records = []
+skipped_lines = 0
+skipped_details = []
+
+for line_number, raw_line in enumerate(sys.stdin, start=1):
+    line = raw_line.strip()
+    if not line:
+        continue
+
+    try:
+        data = json.loads(line)
+        collected = data.get("collected_at_str", "")
+        commit = data.get("commit_time_str", "")
+
+        if not collected or not commit:
+            raise ValueError("Missing timestamp fields")
+
+        gap_seconds = int(parse_timestamp(collected) - parse_timestamp(commit))
+        records.append((gap_seconds, collected, commit))
+    except Exception:
+        skipped_lines += 1
+        preview = line[:SKIPPED_LINE_PREVIEW_LENGTH]
+        if len(line) > SKIPPED_LINE_PREVIEW_LENGTH:
+            preview += "..."
+        skipped_details.append(f"tail line {line_number}: {preview}")
+
+if not records:
+    raise ValueError("No valid JSON lines found in the tail window")
+
+with open(os.environ["SKIPPED_LOG"], "w", encoding="utf-8") as skipped_file:
+    if skipped_details:
+        skipped_file.write("\n".join(skipped_details))
+
+min_gap = min(records, key=lambda item: item[0])
+max_gap = max(records, key=lambda item: item[0])
+
+print(
+    f"{len(records)}|{skipped_lines}|{min_gap[0]}|{min_gap[1]}|{min_gap[2]}|"
+    f"{max_gap[0]}|{max_gap[1]}|{max_gap[2]}"
+)
+' 2>"$error_log")
+parse_status=$?
 
 # Check if Python extraction worked
-if [ "$timestamps" = "ERROR" ] || [ -z "$timestamps" ]; then
-    message="$(date -u +"%Y-%m-%d %H:%M:%S UTC") - Error: Failed to parse JSON line: $last_line"
+if [ $parse_status -ne 0 ] || [ -z "$window_stats" ]; then
+    error_details=$(cat "$error_log" 2>/dev/null)
+    message="$(date -u +"%Y-%m-%d %H:%M:%S UTC") - Error: Failed to parse recent JSON lines from $filename. $error_details"
     echo "$message" | mail -s "$subject" "$recipients"
     exit 1
 fi
 
-# Get the timestamp
-collected_at=$(echo "$timestamps" | cut -d'|' -f1)
-commit_time=$(echo "$timestamps" | cut -d'|' -f2)
+# Get lag summary for the tail window
+sample_count=$(echo "$window_stats" | cut -d'|' -f1)
+skipped_count=$(echo "$window_stats" | cut -d'|' -f2)
+min_gap_seconds=$(echo "$window_stats" | cut -d'|' -f3)
+min_gap_collected_at=$(echo "$window_stats" | cut -d'|' -f4)
+min_gap_commit_time=$(echo "$window_stats" | cut -d'|' -f5)
+max_gap_seconds=$(echo "$window_stats" | cut -d'|' -f6)
+max_gap_collected_at=$(echo "$window_stats" | cut -d'|' -f7)
+max_gap_commit_time=$(echo "$window_stats" | cut -d'|' -f8)
 
-# Convert timestamps to epoch seconds
-collected_epoch=$(date -u -d "$collected_at" +%s 2>/dev/null)
-commit_epoch=$(date -u -d "$commit_time" +%s 2>/dev/null)
+min_gap_hours=$((min_gap_seconds / 3600))
+max_gap_hours=$((max_gap_seconds / 3600))
+should_alert=0
+alert_reason=""
+skipped_details_section=""
 
-
-if [ -z "$collected_epoch" ] || [ -z "$commit_epoch" ]; then
-    message="$(date -u +"%Y-%m-%d %H:%M:%S UTC") - Error: Failed to convert timestamps: '$collected_at' '$commit_time'"
-    echo "$message" | mail -s "$subject" "$recipients"
-    exit 1
+if [ "$min_gap_seconds" -gt "$alert_threshold_seconds" ]; then
+    should_alert=1
+    alert_reason="minimum lag ${min_gap_hours} hours"
 fi
 
-# Calculating the time difference
-time_diff=$((collected_epoch - commit_epoch))
-hours_diff=$((time_diff / 3600))
+if [ "$skipped_count" -gt "$skipped_alert_threshold" ]; then
+    should_alert=1
+    if [ -n "$alert_reason" ]; then
+        alert_reason="${alert_reason}; skipped lines ${skipped_count}"
+    else
+        alert_reason="skipped lines ${skipped_count}"
+    fi
+
+    skipped_details=$(cat "$skipped_log" 2>/dev/null)
+    if [ -n "$skipped_details" ]; then
+        skipped_details_section="
+Skipped tail line details:
+$skipped_details"
+    fi
+fi
 
 # Email message body
-message="Reading Last line of $filename - Streamer Status
-Collected at: $collected_at
-Commit time: $commit_time
-Time difference: $hours_diff hours ($time_diff seconds)"
+message="Reading tail ${tail_lines} lines of $filename - Streamer Status
+Valid tail lines: $sample_count
+Ignored tail lines: $skipped_count
+Minimum lag in window: $min_gap_hours hours ($min_gap_seconds seconds)
+Minimum lag collected at: $min_gap_collected_at
+Minimum lag commit time: $min_gap_commit_time
+Maximum lag in window: $max_gap_hours hours ($max_gap_seconds seconds)
+Maximum lag collected at: $max_gap_collected_at
+Maximum lag commit time: $max_gap_commit_time${skipped_details_section}"
 
-# Send email if lag exceeds 1 hour
-if [ $hours_diff -gt 1 ]; then
-    echo "$message" | mail -s "ALERT: $subject - $hours_diff hours lag" "$recipients"
-    echo "Alert sent: $hours_diff hours lag"
+# Send email if the smallest lag in the window exceeds 1 hour or too many lines were skipped.
+if [ "$should_alert" -eq 1 ]; then
+    echo "$message" | mail -s "ALERT: $subject - $alert_reason" "$recipients"
+    echo "Alert sent: $alert_reason across last $tail_lines lines ($sample_count valid)"
 else
-    echo "OK: $hours_diff hours lag"
+    echo "OK: minimum lag $min_gap_hours hours ($min_gap_seconds seconds) across last $tail_lines lines ($sample_count valid)"
 fi
