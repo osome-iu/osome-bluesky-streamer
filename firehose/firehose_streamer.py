@@ -54,7 +54,7 @@ def flush_buffer():
             json_file.flush()
             os.fsync(json_file.fileno())  # Force write to disk
 
-        logger.info(f"Flushed {len(event_buffer)} events to {current_output_filename}")
+        logger.debug(f"Flushed {len(event_buffer)} events to {current_output_filename}")
         event_buffer.clear()
         events_since_checkpoint = 0  # Reset counter after flush
 
@@ -105,8 +105,16 @@ def _get_ops_by_type(commit: models.ComAtprotoSyncSubscribeRepos.Commit) -> dict
     collected_at_datetime = datetime.now(timezone.utc)
     collected_at = collected_at_datetime.timestamp()
     collected_at_str = collected_at_datetime.strftime(input_date_format)
-    commit_datetime = datetime.strptime(commit.time, input_date_format)
-    commit_timestamp = commit_datetime.timestamp()
+    commit_timestamp = ""
+
+    try:
+        commit_timestamp = datetime.strptime(commit.time, input_date_format).timestamp()
+    except (TypeError, ValueError):
+        try:
+            commit_timestamp = datetime.fromisoformat(commit.time.replace("Z", "+00:00")).timestamp()
+        except (AttributeError, TypeError, ValueError) as e:
+            logger.warning(f"Failed to parse commit time '{commit.time}': {e}")
+
     collect_date = collected_at_datetime.strftime(output_date_format)
     output_filename = f"{collect_date}.json"
 
@@ -146,9 +154,8 @@ def _get_ops_by_type(commit: models.ComAtprotoSyncSubscribeRepos.Commit) -> dict
 if __name__ == '__main__':
     # Configure the logger
     log_folder = "log"
-    # Ensure log folder exists
-    if not os.path.exists(log_folder):
-        os.makedirs(log_folder)
+    os.makedirs(log_folder, exist_ok=True)
+    os.chmod(log_folder, 0o755)  # fix umask issue on every restart
 
     logging.basicConfig(
         level=logging.INFO,
