@@ -1,5 +1,5 @@
 annotated-types==0.7.0
-anyio==4.14.2
+anyio==4.12.0
 atproto==0.0.71
 certifi==2025.11.12
 cffi==2.0.0
@@ -19,6 +19,6 @@ requests==2.33.0
 setuptools==83.0.0
 typing-inspection==0.4.2
 typing_extensions==4.15.0
-urllib3==2.8.0
+urllib3==2.7.0
 websockets==15.0.1
 wheel==0.46.2
