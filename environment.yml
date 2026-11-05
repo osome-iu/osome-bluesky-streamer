@@ -22,7 +22,7 @@ dependencies:
   - pip:
       - annotated-types==0.7.0
       - anyio==4.14.2
-      - atproto==0.0.71
+      - atproto==0.0.73
       - certifi==2025.11.12
       - cffi==2.0.0
       - charset-normalizer==3.4.4
