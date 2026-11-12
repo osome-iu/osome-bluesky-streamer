@@ -32,6 +32,8 @@ import sys
 import logging
 import base64
 import signal
+import queue
+import threading
 
 
 # Batch buffer
@@ -40,6 +42,8 @@ events_since_checkpoint = 0
 current_output_filename = None
 N_EVENTS_PER_CHECKPOINT = 200 # No of event per batch/checkpoint
 global shutdown_requested, storage_failed
+
+msg_queue = queue.Queue()  # unbounded so the websocket reader never blocks
 
 def flush_buffer():
     """Write all buffered events to disk at once"""
@@ -223,10 +227,10 @@ if __name__ == '__main__':
             except Exception as e:
                 logger.error(f"Failed to persist last_seq {last_seq}: {e}")
 
-    def on_message_handler(message: firehose_models.MessageFrame) -> None:
+    def process_message(message: firehose_models.MessageFrame) -> None:
         """
-        Handle incoming messages from the firehose.
-
+        Process an incoming message from the firehose (runs on the worker thread).
+ 
         Args:
             message (firehose_models.MessageFrame): The incoming message frame.
         """
@@ -239,7 +243,7 @@ if __name__ == '__main__':
             return
         if not commit.blocks:
             return
-
+ 
         try:
             _get_ops_by_type(commit)
         except OSError as e:
@@ -260,6 +264,18 @@ if __name__ == '__main__':
             return
         
         checkpoint_seq(commit.seq)
+
+    def on_message_handler(message: firehose_models.MessageFrame) -> None:
+        """Hand the message to the worker thread so the websocket reader stays responsive."""
+        msg_queue.put(message)
+
+    def worker():
+        while True:
+            message = msg_queue.get()
+            try:
+                process_message(message)
+            except BaseException as e:
+                logger.error(f"Worker error: {e}")
 
     def on_callback_error_handler(error: BaseException):
         """
@@ -332,6 +348,7 @@ if __name__ == '__main__':
                     logger.info("Streamer Started fresh")
             elif last_seq is None:
                 logger.info("Streamer Started fresh")
+        threading.Thread(target=worker, daemon=True, name="processor").start()
         client.start(on_message_handler, on_callback_error_handler)
     except Exception as e:
         logger.critical(f"Streamer crashed because of error: {e}")
