@@ -36,8 +36,10 @@ import signal
 
 # Batch buffer
 event_buffer = []
+events_since_checkpoint = 0
 current_output_filename = None
 N_EVENTS_PER_CHECKPOINT = 200 # No of event per batch/checkpoint
+global shutdown_requested, storage_failed
 
 def flush_buffer():
     """Write all buffered events to disk at once"""
@@ -142,6 +144,9 @@ def _get_ops_by_type(commit: models.ComAtprotoSyncSubscribeRepos.Commit) -> dict
                 if record:
                     record_json = convert_to_json_serializable(record)
                     commit_info.update(record_json)
+
+            except OSError:
+                raise
             except Exception as e:
                 logger.error(f"Failed to update with info from blocks\nError: {e}\nRecord content not parsed: {record}\nCommit Info: {commit_info}")
 
@@ -225,6 +230,7 @@ if __name__ == '__main__':
         Args:
             message (firehose_models.MessageFrame): The incoming message frame.
         """
+        global shutdown_requested
         if shutdown_requested:
             return
             
@@ -234,19 +240,26 @@ if __name__ == '__main__':
         if not commit.blocks:
             return
 
-        success = False
         try:
             _get_ops_by_type(commit)
-            success = True
+        except OSError as e:
+            logger.critical(
+                f"Storage failure at seq {commit.seq}; stopping without checkpoint: {e}"
+            )
+            shutdown_requested = True
+            if client is not None:
+                client.stop()
+            return
         except Exception as e:
             logger.error(f"Failed processing commit seq {commit.seq}: {e}")
+            checkpoint_seq(commit.seq + 1, force=True)
+            return
         except BaseException as e:  # Catches pyo3 PanicException
             logger.error(f"Low-level panic at seq {commit.seq}, skipping: {e}")
-            success = False
-        finally:
-            # Always checkpoint; on failure, advance the cursor to skip the bad seq
-            next_seq = commit.seq if success else commit.seq + 1
-            checkpoint_seq(next_seq, force=not success)
+            checkpoint_seq(commit.seq + 1, force=True)
+            return
+        
+        checkpoint_seq(commit.seq)
 
     def on_callback_error_handler(error: BaseException):
         """
